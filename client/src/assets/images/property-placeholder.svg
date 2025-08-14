@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 0 800 600">
+  <rect width="800" height="600" fill="#f5f7fa" />
+  <rect x="150" y="150" width="500" height="300" fill="#e4e7eb" rx="8" ry="8" />
+  <path d="M350,200 L450,200 L450,300 L350,300 Z" fill="#c5c9d0" />
+  <path d="M250,250 L330,250 L330,400 L250,400 Z" fill="#c5c9d0" />
+  <path d="M470,250 L550,250 L550,400 L470,400 Z" fill="#c5c9d0" />
+  <path d="M150,400 L650,400 L400,150 Z" fill="#a4acb8" />
+  <text x="400" y="475" font-family="Arial, sans-serif" font-size="24" text-anchor="middle" fill="#64748b">Imagem do Imóvel não disponível</text>
+</svg>

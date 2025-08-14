@@ -1,0 +1,450 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 224 71.4% 4.1%;
+    --card: 0 0% 100%;
+    --card-foreground: 224 71.4% 4.1%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 224 71.4% 4.1%;
+    --primary: 242.5 93.2% 60.2%;
+    --primary-foreground: 210 20% 98%;
+    --secondary: 220 14.3% 95.9%;
+    --secondary-foreground: 220.9 39.3% 11%;
+    --muted: 220 14.3% 95.9%;
+    --muted-foreground: 220 8.9% 46.1%;
+    --accent: 220 14.3% 95.9%;
+    --accent-foreground: 220.9 39.3% 11%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 242.5 93.2% 60.2%;
+    --radius: 0.5rem;
+  }
+}
+
+/* Paleta de cores personalizada da imagem */
+:root {
+  --color-blue-palette: #436F8A;
+  --color-cream-palette: #F3F0E2;
+  --color-beige-palette: #C6C1B2;
+  --color-rosa-palette: #E67C73;
+  --color-orange-palette: #E76F51;
+
+  /* Transparências */
+  --color-blue-palette-80: rgba(67, 111, 138, 0.8);
+  --color-blue-palette-50: rgba(67, 111, 138, 0.5);
+  --color-cream-palette-80: rgba(243, 240, 226, 0.8);
+  --color-beige-palette-80: rgba(198, 193, 178, 0.8);
+  --color-rosa-palette-80: rgba(230, 124, 115, 0.8);
+  --color-orange-palette-80: rgba(231, 111, 81, 0.8);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply font-sans antialiased bg-gray-50 text-foreground;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-medium tracking-tight;
+  }
+
+  h1 {
+    @apply text-2xl font-semibold;
+  }
+
+  h2 {
+    @apply text-xl font-semibold;
+  }
+}
+
+@layer components {
+  .card-hover {
+    @apply transition-all duration-200 hover:shadow-md hover:border-primary/20;
+  }
+
+  .stat-card {
+    @apply bg-white rounded-lg border p-4 flex flex-col;
+  }
+
+  .stat-value {
+    @apply text-2xl font-semibold mt-2;
+  }
+
+  .stat-label {
+    @apply text-sm text-gray-500;
+  }
+
+  .layout-container {
+    @apply max-w-7xl mx-auto px-4 sm:px-6 py-6;
+  }
+
+  .section-title {
+    @apply text-lg font-medium mb-4;
+  }
+
+  .sidebar-item {
+    @apply flex items-center gap-3 rounded-md px-3 py-2.5 text-sm font-medium text-[#6B7280] hover:bg-gray-50 hover:text-gray-900 transition-colors;
+  }
+
+  .sidebar-item.active {
+    @apply bg-[#F5F6FF] text-[#434BE6] font-medium;
+  }
+}
+
+/* Gradient animation for CTA button */
+@keyframes gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+/* Estilos específicos para tabelas com cabeçalhos fixos - versão reescrita */
+.sticky-table-container {
+  max-height: 600px;
+  overflow-y: auto;
+  position: relative;
+}
+
+/* Garantir que cabeçalhos sejam fixos ao rolar */
+.sticky-table-container thead tr th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background-color: white !important;
+}
+
+.sticky-table-container thead tr:nth-child(2) th {
+  position: sticky;
+  top: 41px; /* Ajustar conforme a altura da primeira linha */
+  z-index: 10;
+  background-color: white !important;
+}
+
+
+/* Coluna fixa à esquerda */
+.sticky-table-container th:first-child,
+.sticky-table-container td:first-child {
+  position: sticky !important;
+  left: 0 !important;
+  z-index: 20 !important;
+  background-color: inherit !important;
+}
+
+/* Célula superior esquerda (canto) precisa ter z-index maior */
+.sticky-table-container thead tr:first-child th:first-child {
+  z-index: 40 !important;
+}
+
+/* Segunda linha primeira coluna */
+.sticky-table-container thead tr:nth-child(2) th:first-child {
+  z-index: 35 !important;
+}
+
+/* Estilos específicos para headers sticky */
+.sticky-header th {
+  position: sticky !important;
+  top: 140px !important; /* Ajustado para considerar o cabeçalho fixo */
+  z-index: 30 !important;
+  background-color: white !important;
+}
+
+.sticky-subheader th {
+  position: sticky !important;
+  top: 181px !important; /* Ajustado para considerar o cabeçalho fixo */
+  z-index: 29 !important;
+  background-color: white !important;
+}
+
+/* Estilos para o cabeçalho fixo */
+.sticky-table-header {
+  position: sticky;
+  top: 0;
+  background-color: white;
+  z-index: 40;
+  border-bottom: 1px solid #e5e7eb;
+  padding-bottom: 8px;
+  backdrop-filter: blur(8px);
+}
+
+/* Linhas alternadas */
+.dark-striped-rows tr:nth-child(odd) {
+  background-color: #f3f4f6 !important;
+}
+
+.dark-striped-rows tr:nth-child(even) {
+  background-color: white !important;
+}
+
+/* Cores de fundo ainda mais escuras para as linhas alternadas */
+.table-row-dark {
+  background-color: #e5e7eb !important;  /* Um cinza mais escuro */
+}
+
+.table-row-light {
+  background-color: white !important;
+}
+
+/* Estilos para fixar cabeçalhos e subcabeçalhos */
+.sticky-header th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 20 !important;
+  background-color: white !important;
+}
+
+
+/* Estilos para gráficos com cores harmônicas */
+.recharts-pie-label-text {
+  font-weight: 600;
+  font-size: 12px;
+  fill: #475569;
+}
+
+.recharts-legend-item {
+  transition: opacity 0.2s;
+}
+
+.recharts-legend-item:hover {
+  opacity: 0.7;
+}
+
+.recharts-default-tooltip {
+  border-radius: 8px !important;
+  box-shadow: 0 2px 15px rgba(0, 0, 0, 0.05) !important;
+  transition: transform 0.2s;
+}
+
+.recharts-tooltip-cursor {
+  opacity: 0.25;
+}
+
+.chart-card {
+  transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.chart-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05);
+}
+
+.sticky-subheader th {
+  position: sticky !important;
+  top: 40px !important;
+  z-index: 19 !important;
+  background-color: white !important;
+}
+
+.table-row-entry {
+  background-color: #eff6ff !important;  /* Azul claro */
+}
+
+/* Estilos para a tabela com scroll */
+.tabela-fluxo {
+  overflow-x: auto;
+}
+
+/* Estilos minimalistas para gráficos */
+.recharts-wrapper {
+  font-family: 'Inter', sans-serif;
+}
+
+.recharts-pie-label-text {
+  font-size: 13px;
+  font-weight: 600;
+  fill: #4b5563;
+}
+
+.recharts-legend-item-text {
+  font-size: 13px !important;
+}
+
+.recharts-tooltip-item-name,
+.recharts-tooltip-item-value {
+  color: #434BE6 !important;
+}
+
+/* Garantir consistência nas cores dos gráficos */
+.recharts-legend-item-text {
+  color: #434BE6 !important;
+}
+
+.recharts-sector {
+  transition: all 0.3s ease;
+}
+
+.recharts-sector:hover {
+  opacity: 0.9;
+  filter: drop-shadow(0px 0px 5px rgba(67, 75, 230, 0.5));
+  transform: scale(1.02);
+}
+
+.recharts-default-legend li:hover {
+  transform: translateY(-1px);
+  transition: all 0.2s ease;
+}
+
+/* Estilos para os gráficos */
+.chart-card {
+  transition: all 0.3s ease;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.chart-card:hover {
+  box-shadow: 0 12px 28px -8px rgba(67, 75, 230, 0.15);
+  transform: translateY(-3px);
+}
+
+/* Estilos para legendas dos gráficos */
+.recharts-legend-item {
+  padding: 3px 0;
+  transition: opacity 0.2s;
+  cursor: pointer;
+}
+
+.recharts-legend-item:hover {
+  opacity: 0.8;
+}
+
+/* Melhoria para tooltip */
+.recharts-tooltip-wrapper {
+  transition: transform 0.2s ease;
+}
+
+.recharts-tooltip-wrapper:hover {
+  transform: scale(1.02);
+}
+
+/* Estilos para otimização dos gráficos em modo print */
+@media print {
+  .grafico-section {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 20px 40px;
+    gap: 12px;
+  }
+
+  .grafico-content {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    gap: 40px;
+    flex-wrap: wrap;
+  }
+
+  .grafico-title {
+    font-size: 16px !important;
+    font-weight: 600;
+    text-align: center;
+    margin-bottom: 8px;
+  }
+
+  .grafico-subtitle {
+    font-size: 12px !important;
+    text-align: center;
+    margin-bottom: 16px;
+    color: #6b7280;
+  }
+
+  canvas {
+    max-width: 300px;
+    height: auto;
+  }
+
+  /* Otimização específica para containers de gráficos no PDF */
+  .print-chart-container {
+    overflow: hidden !important;
+    max-width: 100% !important;
+    contain: layout !important;
+    padding: 10px !important;
+    margin: 10px !important;
+  }
+
+  /* Legendas dos gráficos no modo print */
+  [data-print-mode="true"] .recharts-legend-wrapper {
+    padding-left: 15px !important;
+    margin-left: 10px !important;
+    border-left: 1px dashed #d8dbff !important;
+  }
+
+  [data-print-mode="true"] .recharts-legend-item-text {
+    font-size: 9px !important;
+    line-height: 1.2 !important;
+  }
+
+  [data-print-mode="true"] .recharts-legend-item {
+    margin-bottom: 4px !important;
+  }
+
+  /* Contenção de gráficos circulares */
+  [data-print-mode="true"] .recharts-wrapper,
+  [data-print-mode="true"] .recharts-surface,
+  [data-print-mode="true"] .recharts-pie {
+    overflow: hidden !important;
+    max-width: 100% !important;
+    contain: layout !important;
+  }
+
+  /* Estilos específicos para tabelas de amortização no PDF */
+  .print-table-full {
+    width: 100% !important;
+    table-layout: fixed !important;
+    border-collapse: collapse !important;
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+  }
+
+  /* Container da tabela para impressão - sem overflow */
+  @media print {
+    .sticky-table-container {
+      overflow: visible !important;
+      max-height: none !important;
+      position: static !important;
+    }
+  }
+
+  .print-table-header {
+    padding: 4px 6px !important;
+    text-align: center !important;
+    font-weight: bold !important;
+    border: 1px solid #d1d5db !important;
+    background-color: #f3f4f6 !important;
+    word-wrap: break-word !important;
+  }
+
+  .print-table-cell {
+    padding: 3px 5px !important;
+    border: 1px solid #e5e7eb !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    vertical-align: middle !important;
+  }
+
+  .print-money-cell {
+    text-align: right !important;
+  }
+
+  .print-percent-cell {
+    text-align: center !important;
+  }
+}

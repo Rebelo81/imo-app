@@ -1,0 +1,91 @@
+CREATE TABLE `clients` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`user_sequential_id` integer NOT NULL,
+	`name` text NOT NULL,
+	`email` text,
+	`phone` text,
+	`company` text,
+	`notes` text,
+	`user_id` integer NOT NULL,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `projections` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`user_sequential_id` integer NOT NULL,
+	`titulo` text NOT NULL,
+	`cliente_id` integer NOT NULL,
+	`imovel_id` integer NOT NULL,
+	`estrategias` text NOT NULL,
+	`nome_imovel` text,
+	`tipo_imovel` text,
+	`unidade_imovel` text,
+	`area_imovel` real,
+	`descricao_imovel` text,
+	`imagem_imovel_url` text,
+	`site_imovel_url` text,
+	`endereco` text,
+	`bairro` text,
+	`cidade` text,
+	`estado` text,
+	`cep` text,
+	`prazo_entrega` integer NOT NULL,
+	`tempo_entrega` text,
+	`valor_tabela` real NOT NULL,
+	`valor_desconto` real DEFAULT 0,
+	`valor_entrada` real NOT NULL,
+	`prazo_pagamento` integer NOT NULL,
+	`correcao_mensal` real NOT NULL,
+	`indice_correcao` text,
+	`correcao_apos_entrega` real DEFAULT 0,
+	`indice_correcao_apos_chaves` text,
+	`tem_reforcos` integer DEFAULT false,
+	`frequencia_reforcos` integer DEFAULT 0,
+	`valor_reforco` real DEFAULT 0,
+	`tem_chaves` integer DEFAULT false,
+	`valor_chaves` real DEFAULT 0,
+	`tipo_parcelamento` text DEFAULT 'automatico',
+	`user_id` integer NOT NULL,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `properties` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`user_sequential_id` integer NOT NULL,
+	`name` text NOT NULL,
+	`type` text NOT NULL,
+	`unit` text,
+	`area` real,
+	`description` text,
+	`image_url` text,
+	`website_url` text,
+	`address` text,
+	`neighborhood` text,
+	`city` text,
+	`state` text,
+	`zip_code` text,
+	`user_id` integer NOT NULL,
+	`created_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE `users` (
+	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
+	`email` text NOT NULL,
+	`password` text NOT NULL,
+	`name` text NOT NULL,
+	`company` text,
+	`photo` text,
+	`is_admin` integer DEFAULT false NOT NULL,
+	`last_active_at` integer,
+	`stripe_customer_id` text,
+	`stripe_subscription_id` text,
+	`subscription_status` text,
+	`subscription_start_date` integer,
+	`subscription_current_period_end` integer,
+	`subscription_canceled_at` integer,
+	`hasseenwelcomemodal` integer DEFAULT false NOT NULL,
+	`created_at` integer NOT NULL,
+	`updated_at` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `users_email_unique` ON `users` (`email`);

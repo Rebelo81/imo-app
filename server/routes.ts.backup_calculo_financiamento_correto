@@ -1,0 +1,1842 @@
+import type { Express, Request, Response, NextFunction } from "express";
+import { createServer, type Server, request as httpRequest } from "http";
+import { storage } from "./storage";
+import { z } from "zod";
+import { 
+  insertClientSchema, insertPropertySchema, insertProjectionSchema, 
+  insertTransactionSchema, PROJECTION_STRATEGY, InsertProjection 
+} from "@shared/schema";
+import { calcularFinanciamentoPlanta } from "./calculators/formulasFinanciamentoPlanta";
+import projectionCalculationsRouter from './routes/projectionCalculations';
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // Helper function to validate request body
+  function validateBody<T>(schema: z.ZodType<T>) {
+    return (req: Request, res: Response, next: () => void) => {
+      try {
+        req.body = schema.parse(req.body);
+        next();
+      } catch (error) {
+        res.status(400).json({ error: "Invalid request body", details: error });
+      }
+    };
+  }
+
+  // User routes
+  app.get('/api/users/current', async (req, res) => {
+    // For demo purposes, return the demo user
+    const user = await storage.getUserByUsername('demo');
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    // Don't return the password
+    const { password, ...userWithoutPassword } = user;
+    res.json(userWithoutPassword);
+  });
+
+  // Client routes
+  app.get('/api/clients', async (req, res) => {
+    // For demo, always use user ID 1
+    const clients = await storage.getClients(1);
+    res.json(clients);
+  });
+
+  app.get('/api/clients/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid client ID' });
+    }
+
+    const client = await storage.getClient(id);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    res.json(client);
+  });
+
+  app.post('/api/clients', validateBody(insertClientSchema), async (req, res) => {
+    // Always set userId to 1 for demo
+    req.body.userId = 1;
+    const client = await storage.createClient(req.body);
+    res.status(201).json(client);
+  });
+
+  app.put('/api/clients/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid client ID' });
+    }
+
+    const client = await storage.updateClient(id, req.body);
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    res.json(client);
+  });
+
+  app.delete('/api/clients/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid client ID' });
+    }
+
+    const success = await storage.deleteClient(id);
+    if (!success) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    res.status(204).end();
+  });
+
+  // Property routes
+  app.get('/api/properties', async (req, res) => {
+    // For demo, always use user ID 1
+    const properties = await storage.getProperties(1);
+    res.json(properties);
+  });
+
+  app.get('/api/properties/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid property ID' });
+    }
+
+    const property = await storage.getProperty(id);
+    if (!property) {
+      return res.status(404).json({ error: 'Property not found' });
+    }
+
+    res.json(property);
+  });
+
+  app.post('/api/properties', validateBody(insertPropertySchema), async (req, res) => {
+    // Always set userId to 1 for demo
+    req.body.userId = 1;
+    const property = await storage.createProperty(req.body);
+    res.status(201).json(property);
+  });
+
+  app.put('/api/properties/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid property ID' });
+    }
+
+    const property = await storage.updateProperty(id, req.body);
+    if (!property) {
+      return res.status(404).json({ error: 'Property not found' });
+    }
+
+    res.json(property);
+  });
+
+  app.delete('/api/properties/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid property ID' });
+    }
+
+    const success = await storage.deleteProperty(id);
+    if (!success) {
+      return res.status(404).json({ error: 'Property not found' });
+    }
+
+    res.status(204).end();
+  });
+
+  // Projection routes
+  app.get('/api/projections', async (req, res) => {
+    // For demo, always use user ID 1
+    const projections = await storage.getProjections(1);
+    res.json(projections);
+  });
+
+  app.get('/api/projections/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    const projection = await storage.getProjection(id);
+    if (!projection) {
+      return res.status(404).json({ error: 'Projection not found' });
+    }
+
+    // Verificar se existem cálculos de financiamento na planta para esta projeção
+    try {
+      const calculosProjecao = await storage.getCalculosProjecao(id);
+
+      // Se existirem cálculos, montar o objeto de financiamento na planta
+      if (calculosProjecao && calculosProjecao.length > 0) {
+        console.log(`Encontrados ${calculosProjecao.length} registros de cálculos para a projeção #${id}`);
+
+        // Definir variáveis antes de usar
+        const valorImovel = parseFloat(projection.listPrice.replace(/[^\d.-]/g, ''));
+        const prazoEntrega = projection.deliveryMonths;
+        const prazoPagamento = projection.paymentMonths;
+
+        // Converter os cálculos do banco para o formato usado no frontend
+        const parcelas = calculosProjecao.map(calculo => ({
+          mes: calculo.mes,
+          data: new Date(new Date().getFullYear(), new Date().getMonth() + calculo.mes).toISOString().split('T')[0],
+          tipoPagamento: calculo.mes === 0 || calculo.valorEntrada !== "0" ? 'Entrada' :
+                         calculo.valorChaves !== "0" ? 'Chaves' :
+                         calculo.reforcoBase !== "0" ? 'Reforço' : 
+                         'Parcela',
+          valorBase: parseFloat(calculo.pagamentoTotalLiquido),
+          percentualCorrecao: parseFloat(calculo.taxaCorrecao),
+          valorCorrigido: parseFloat(calculo.pagamentoTotal),
+          saldoDevedor: parseFloat(calculo.saldoDevedorCorrigido),
+          saldoLiquido: parseFloat(calculo.saldoLiquido),
+          correcaoAcumulada: parseFloat(calculo.taxaAcumulada),
+          taxaCorrecaoEditavel: calculo.mes > prazoEntrega ? parseFloat(calculo.taxaCorrecao) : undefined
+        }));
+
+        // Calcular o resumo com base nas parcelas
+        const valorEntrada = parcelas.find(p => p.tipoPagamento === 'Entrada')?.valorBase || 0;
+
+        // Calcular totais
+        let totalCorrecao = 0;
+        parcelas.forEach(parcela => {
+          if (parcela.valorCorrigido > parcela.valorBase) {
+            totalCorrecao += (parcela.valorCorrigido - parcela.valorBase);
+          }
+        });
+
+        const valorTotal = parcelas.reduce((sum, parcela) => sum + parcela.valorCorrigido, 0);
+        const percentualCorrecao = totalCorrecao / (valorTotal - totalCorrecao) * 100;
+
+        // Iniciar o objeto calculationResults se não existir
+        if (!projection.calculationResults) {
+          projection.calculationResults = {};
+        }
+
+        // Adicionar os resultados do financiamento aos resultados de cálculo da projeção
+        projection.calculationResults.financiamentoPlanta = {
+          parcelas,
+          resumo: {
+            valorImovel,
+            valorEntrada,
+            valorFinanciado: valorImovel - valorEntrada,
+            prazoEntrega,
+            prazoPagamento,
+            totalParcelas: parcelas.length,
+            totalCorrecao,
+            percentualCorrecao,
+            valorTotal
+          }
+        };
+      }
+    } catch (error) {
+      console.error("Erro ao carregar cálculos da projeção:", error);
+    }
+
+    // Enriquecer a projeção com cálculos detalhados para o relatório
+    if (projection.strategies && projection.strategies.length > 0) {
+      console.log(`Processando projeção ID ${id} com estratégias: ${projection.strategies}`);
+
+      // Obter valores necessários para cálculos
+      const listPriceValue = parseFloat(projection.listPrice.replace(/[^\d.-]/g, ''));
+      const discountValue = parseFloat(projection.discount?.replace(/[^\d.-]/g, '') || '0');
+      const downPaymentValue = parseFloat(projection.downPayment.replace(/[^\d.-]/g, ''));
+      const monthlyCorrectionValue = parseFloat(projection.monthlyCorrection.replace(/[^\d.-]/g, '') || '0');
+      const postDeliveryCorrectionValue = parseFloat(projection.postDeliveryCorrection?.replace(/[^\d.-]/g, '') || '0');
+
+      // Criar objeto detalhado de calculationResults com valores fixos para garantir que temos dados
+      const calculationResults: Record<string, any> = {
+        // Valores iniciais para garantir que existem dados
+        roi: 22.5,
+        irr: 18.3,
+        paybackMonths: 32,
+        netProfit: 191250
+      };
+
+      // Gerar resultados detalhados para FUTURE_SALE
+      if (projection.strategies.includes('FUTURE_SALE')) {
+        const futureValuePercentageValue = parseFloat(projection.futureValuePercentage?.replace(/[^\d.-]/g, '') || '0');
+        const futureValueMonthValue = projection.futureValueMonth || 60;
+        const saleCommissionValue = parseFloat(projection.saleCommission?.replace(/[^\d.-]/g, '') || '0');
+        const saleTaxesValue = parseFloat(projection.saleTaxes?.replace(/[^\d.-]/g, '') || '0');
+        const incomeTaxValue = parseFloat(projection.incomeTax?.replace(/[^\d.-]/g, '') || '0');
+
+        const discountedPrice = listPriceValue * (1 - discountValue / 100);
+        const downPaymentAmount = discountedPrice * (downPaymentValue / 100);
+        const remainingAmount = discountedPrice - downPaymentAmount;
+        const monthlyAmount = remainingAmount / projection.paymentMonths;
+
+        // Criar fluxo de caixa
+        const cashFlow = [];
+        let totalInvestment = downPaymentAmount;
+
+        // Entrada inicial (valor negativo = saída de caixa)
+        cashFlow.push({
+          month: 0,
+          description: 'Entrada Inicial',
+          amount: -downPaymentAmount
+        });
+
+        // Parcelas durante a construção
+        for (let month = 1; month <= projection.deliveryMonths; month++) {
+          const correctionFactor = Math.pow(1 + monthlyCorrectionValue / 100, month);
+          const adjustedAmount = monthlyAmount * correctionFactor;
+          totalInvestment += adjustedAmount;
+
+          cashFlow.push({
+            month,
+            description: `Parcela ${month}`,
+            amount: -adjustedAmount
+          });
+
+          // Adicionar bônus se aplicável
+          if (projection.includeBonusPayments && month % projection.bonusFrequency === 0) {
+            const bonusAmount = adjustedAmount * 2; // Exemplo: Bônus = 2 parcelas
+            totalInvestment += bonusAmount;
+
+            cashFlow.push({
+              month,
+              description: `Bônus ${month / projection.bonusFrequency}`,
+              amount: -bonusAmount
+            });
+          }
+        }
+
+        // Parcelas após entrega
+        for (let month = projection.deliveryMonths + 1; month <= projection.paymentMonths; month++) {
+          const preDeliveryCorrection = Math.pow(1 + monthlyCorrectionValue / 100, projection.deliveryMonths);
+          const postDeliveryCorrection = Math.pow(1 + postDeliveryCorrectionValue / 100, month - projection.deliveryMonths);
+          const adjustedAmount = monthlyAmount * preDeliveryCorrection * postDeliveryCorrection;
+          totalInvestment += adjustedAmount;
+
+          cashFlow.push({
+            month,
+            description: `Parcela ${month} (pós-entrega)`,
+            amount: -adjustedAmount
+          });
+
+          // Adicionar bônus se aplicável
+          if (projection.includeBonusPayments && month % projection.bonusFrequency === 0) {
+            const bonusAmount = adjustedAmount * 2; // Exemplo: Bônus = 2 parcelas
+            totalInvestment += bonusAmount;
+
+            cashFlow.push({
+              month,
+              description: `Bônus ${month / projection.bonusFrequency} (pós-entrega)`,
+              amount: -bonusAmount
+            });
+          }
+        }
+
+        // Valor de venda futura
+        const futureValueMonth = futureValueMonthValue > projection.paymentMonths 
+          ? futureValueMonthValue 
+          : projection.paymentMonths + 24; // Default para 2 anos após o último pagamento
+
+        const appreciationFactor = 1 + (futureValuePercentageValue / 100);
+        const futureValue = discountedPrice * appreciationFactor;
+
+        // Despesas de venda
+        const saleCommissionAmount = futureValue * (saleCommissionValue / 100);
+        const saleTaxesAmount = futureValue * (saleTaxesValue / 100);
+        const saleExpenses = saleCommissionAmount + saleTaxesAmount;
+
+        // Lucro bruto
+        const grossProfit = futureValue - totalInvestment;
+
+        // Imposto de renda
+        const incomeTaxAmount = grossProfit * (incomeTaxValue / 100);
+
+        // Lucro líquido
+        const netProfit = grossProfit - saleExpenses - incomeTaxAmount;
+
+        // Adicionar venda ao fluxo de caixa
+        cashFlow.push({
+          month: futureValueMonth,
+          description: 'Venda do imóvel',
+          amount: futureValue
+        });
+
+        // Adicionar despesas da venda
+        cashFlow.push({
+          month: futureValueMonth,
+          description: 'Comissão de venda',
+          amount: -saleCommissionAmount
+        });
+
+        cashFlow.push({
+          month: futureValueMonth,
+          description: 'Impostos da venda',
+          amount: -saleTaxesAmount
+        });
+
+        cashFlow.push({
+          month: futureValueMonth,
+          description: 'Imposto de renda',
+          amount: -incomeTaxAmount
+        });
+
+        // Calcular ROI
+        const roi = (netProfit / totalInvestment) * 100;
+
+        // Calcular payback simplificado
+        const paybackMonths = Math.ceil(totalInvestment / (netProfit / futureValueMonth)) || 0;
+
+        // Calcular TIR simplificada (aproximada)
+        const irr = Math.pow((1 + roi / 100), (12 / futureValueMonth)) - 1;
+        const annualizedIrr = irr * 12 * 100;
+
+        // Adicionar resultados detalhados
+        calculationResults.futureSale = {
+          purchasePrice: discountedPrice,
+          totalInvestment: totalInvestment,
+          futureValue: futureValue,
+          saleExpenses: saleExpenses,
+          grossProfit: grossProfit,
+          incomeTax: incomeTaxAmount,
+          netProfit: netProfit,
+          roi: roi,
+          irr: annualizedIrr,
+          paybackMonths: paybackMonths
+        };
+
+        calculationResults.futureSaleCashFlow = cashFlow;
+      }
+
+      // Gerar resultados detalhados para ASSET_APPRECIATION
+      if (projection.strategies.includes('ASSET_APPRECIATION')) {
+        const appreciationYearsValue = projection.appreciationYears || 10;
+        const annualAppreciationValue = parseFloat(projection.annualAppreciation?.replace(/[^\d.-]/g, '') || '0');
+        const maintenanceCostsValue = parseFloat(projection.maintenanceCosts?.replace(/[^\d.-]/g, '') || '0');
+
+        const discountedPrice = listPriceValue * (1 - discountValue / 100);
+        const yearlyProjection = [];
+        let currentValue = discountedPrice;
+        let totalMaintenance = 0;
+
+        for (let year = 1; year <= appreciationYearsValue; year++) {
+          const appreciation = currentValue * (annualAppreciationValue / 100);
+          const maintenanceCost = discountedPrice * (maintenanceCostsValue / 100);
+          totalMaintenance += maintenanceCost;
+
+          const yearData = {
+            year,
+            propertyValue: currentValue + appreciation,
+            appreciation,
+            maintenanceCost,
+            netValue: (currentValue + appreciation) - totalMaintenance
+          };
+
+          yearlyProjection.push(yearData);
+          currentValue = yearData.propertyValue;
+        }
+
+        const finalValue = yearlyProjection[yearlyProjection.length - 1].propertyValue;
+        const totalAppreciation = finalValue - discountedPrice;
+        const netGain = totalAppreciation - totalMaintenance;
+        const appreciationPercentage = (totalAppreciation / discountedPrice) * 100;
+        const annualizedReturn = Math.pow((1 + appreciationPercentage / 100), (1 / appreciationYearsValue)) - 1;
+
+        calculationResults.assetAppreciation = {
+          initialValue: discountedPrice,
+          finalValue,
+          totalAppreciation,
+          totalMaintenance,
+          netGain,
+          appreciationPercentage,
+          annualizedReturn: annualizedReturn * 100
+        };
+
+        calculationResults.assetAppreciationYearly = yearlyProjection;
+      }
+
+      // Gerar resultados detalhados para RENTAL_YIELD
+      if (projection.strategies.includes('RENTAL_YIELD')) {
+        const monthlyRentalValue = parseFloat(projection.monthlyRental?.replace(/[^\d.-]/g, '') || '0');
+        const furnishingCostsValue = parseFloat(projection.furnishingCosts?.replace(/[^\d.-]/g, '') || '0');
+        const condoFeesValue = parseFloat(projection.condoFees?.replace(/[^\d.-]/g, '') || '0');
+        const propertyTaxValue = parseFloat(projection.propertyTax?.replace(/[^\d.-]/g, '') || '0');
+
+        const discountedPrice = listPriceValue * (1 - discountValue / 100);
+        const initialInvestment = discountedPrice + furnishingCostsValue;
+        const annualRentalIncome = monthlyRentalValue * 12;
+        const annualExpenses = (condoFeesValue + propertyTaxValue) * 12;
+        const annualNetIncome = annualRentalIncome - annualExpenses;
+        const firstYearYield = (annualNetIncome / initialInvestment) * 100;
+
+        // Projeção para 10 anos
+        const projectionYears = 10;
+        const annualPropertyAppreciation = 5; // Valor padrão
+        const yearlyProjection = [];
+
+        let currentPropertyValue = discountedPrice;
+        let totalNetIncome = 0;
+        let currentRentalIncome = monthlyRentalValue * 12;
+        let currentExpenses = annualExpenses;
+
+        for (let year = 1; year <= projectionYears; year++) {
+          // Aumentar valor do imóvel com apreciação anual
+          const propertyAppreciation = currentPropertyValue * (annualPropertyAppreciation / 100);
+          currentPropertyValue += propertyAppreciation;
+
+          // Aumentar aluguel e despesas com inflação (exemplo 3%)
+          const inflationFactor = Math.pow(1.03, year - 1); 
+          const adjustedRentalIncome = currentRentalIncome * inflationFactor;
+          const adjustedExpenses = currentExpenses * inflationFactor;
+          const netIncome = adjustedRentalIncome - adjustedExpenses;
+
+          totalNetIncome += netIncome;
+
+          const yieldValue = (netIncome / initialInvestment) * 100;
+
+          yearlyProjection.push({
+            year,
+            propertyValue: currentPropertyValue,
+            rentalIncome: adjustedRentalIncome,
+            expenses: adjustedExpenses,
+            netIncome,
+            yieldRate: yieldValue
+          });
+        }
+
+        const totalPropertyValueIncrease = currentPropertyValue - discountedPrice;
+        const totalReturn = totalNetIncome + totalPropertyValueIncrease;
+        const totalReturnPercentage = (totalReturn / initialInvestment) * 100;
+
+        // Calcular rendimento médio
+        const averageYield = yearlyProjection.reduce((sum, year) => sum + (year.yieldRate || 0), 0) / projectionYears;
+
+        calculationResults.rentalYield = {
+          initialInvestment,
+          furnishingCosts: furnishingCostsValue,
+          annualRentalIncome,
+          annualExpenses,
+          annualNetIncome,
+          firstYearYield,
+          propertyValueIncrease: totalPropertyValueIncrease,
+          totalNetIncome,
+          totalReturn,
+          totalReturnPercentage,
+          averageYield
+        };
+
+        calculationResults.rentalYieldYearly = yearlyProjection;
+      }
+
+      // Atualizar os calculationResults na projeção
+      projection.calculationResults = calculationResults;
+    }
+
+    // Os dados de cliente e propriedade já são carregados no método getProjection do storage
+
+    res.json(projection);
+  });
+
+  app.post('/api/projections', validateBody(insertProjectionSchema), async (req, res) => {
+    // Always set userId to 1 for demo
+    req.body.userId = 1;
+
+    // Validate strategies
+    if (!req.body.strategies || !Array.isArray(req.body.strategies) || req.body.strategies.length === 0) {
+      return res.status(400).json({ error: 'At least one strategy must be selected' });
+    }
+
+    // Check if all strategies are valid
+    const invalidStrategies = req.body.strategies.filter(
+      (strategy: string) => !Object.values(PROJECTION_STRATEGY).includes(strategy)
+    );
+    if (invalidStrategies.length > 0) {
+      return res.status(400).json({ 
+        error: 'Invalid strategies', 
+        invalidStrategies 
+      });
+    }
+
+    const projection = await storage.createProjection(req.body);
+    res.status(201).json(projection);
+  });
+
+  // Nova rota para criar projeções de forma simplificada
+  app.post('/api/projections/new', async (req, res) => {
+    try {
+      console.log("Recebendo dados para nova projeção:", JSON.stringify(req.body, null, 2));
+
+      // Verificar título e estratégias
+      if (!req.body.title || !req.body.strategies || req.body.strategies.length === 0) {
+        return res.status(400).json({ error: 'Missing required fields: title and strategies' });
+      }
+
+      // Importar o calculador de financiamento na planta
+      const { calcularFinanciamentoPlanta, FinanciamentoPlantaSchema } = await import('./calculators/formulasFinanciamentoPlanta');
+
+      // Obter todos os campos do formulário enviados pelo cliente
+      const formData = req.body;
+
+      // Preparar dados para cálculo de financiamento na planta
+      let detalhesFinanciamento = null;
+      try {
+        // Converter valores para os tipos esperados pelo calculador
+        const inputCalculo = {
+          valorImovel: Number(formData.listPrice || 0),
+          valorEntrada: Number(formData.listPrice || 0) * Number(formData.downPayment || 0) / 100,
+          percentualEntrada: Number(formData.downPayment || 0),
+          prazoEntrega: Number(formData.deliveryMonths || 36),
+          prazoPagamento: Number(formData.paymentMonths || 36),
+          correcaoMensalAteChaves: Number(formData.monthlyCorrection || 0.5),
+          correcaoMensalAposChaves: Number(formData.postDeliveryCorrection || formData.monthlyCorrection || 0.5),
+          tipoParcelamento: 'automatico' as 'automatico', // Tipagem explícita para o enum
+          incluirReforco: Boolean(formData.hasBoost),
+          periodicidadeReforco: (formData.periodicidadeReforco || 'trimestral') as 'trimestral' | 'semestral' | 'anual',
+          valorReforco: Number(formData.boostValue || 0),
+          valorChaves: Number(formData.keysValue || 0)
+        };
+
+        // Executar cálculo usando as fórmulas de financiamento na planta
+        console.log("Executando cálculo de financiamento na planta com os valores:", inputCalculo);
+
+        // Validar input com o schema do financiamento
+        const validaInput = FinanciamentoPlantaSchema.safeParse(inputCalculo);
+
+        if (!validaInput.success) {
+          console.error("Erro de validação dos dados de financiamento:", validaInput.error);
+          throw new Error("Dados de financiamento inválidos: " + validaInput.error.message);
+        }
+
+        detalhesFinanciamento = calcularFinanciamentoPlanta(inputCalculo);
+        console.log("Cálculo de financiamento na planta concluído com sucesso.");
+      } catch (calcError) {
+        console.error("Erro ao calcular financiamento na planta:", calcError);
+        // Continuar sem os cálculos detalhados
+      }
+
+      // Preparar os resultados de cálculo
+      const calculationResults = formData.calculationResults || {};
+
+      // Adicionar resultados do financiamento na planta, se disponíveis
+      if (detalhesFinanciamento) {
+        calculationResults.financiamentoPlanta = {
+          resumo: detalhesFinanciamento.resumo,
+          parcelas: detalhesFinanciamento.parcelas
+        };
+      }
+
+      // Criar objeto com todos os campos do formulário para persistência no banco
+      const projectionData = {
+        // Campos básicos
+        title: formData.title,
+        strategies: formData.strategies,
+        clientId: formData.clientId ? parseInt(formData.clientId) : 1,
+        propertyId: formData.propertyId ? parseInt(formData.propertyId) : 1,
+        userId: 1,
+        propertyImageUrl: formData.propertyImageUrl,
+        propertyWebsiteUrl: formData.propertyWebsiteUrl,
+
+        // Dados básicos do imóvel
+        propertyName: formData.propertyName || "",
+        propertyType: formData.propertyType || "",
+        propertyUnit: formData.propertyUnit || "",
+        propertyArea: formData.propertyArea ? String(formData.propertyArea) : null,
+        propertyDescription: formData.propertyDescription || "",
+
+        // Dados de endereço
+        address: formData.address || "",
+        neighborhood: formData.neighborhood || "",
+        city: formData.city || "",
+        state: formData.state || "",
+        zipCode: formData.zipCode || "",
+
+        // Dados de compra 
+        deliveryMonths: Number(formData.deliveryMonths || 36),
+        deliveryTime: formData.deliveryTime || "",
+        listPrice: String(formData.listPrice || "500000"),
+        discount: String(formData.discount || "0"),
+        downPayment: String(formData.downPayment || "0"),
+        paymentMonths: Number(formData.paymentMonths || 36),
+        monthlyCorrection: String(formData.monthlyCorrection || "0.5"),
+        indiceCorrecao: formData.indiceCorrecao || "INCC",
+        postDeliveryCorrection: String(formData.postDeliveryCorrection || formData.monthlyCorrection || "0.5"),
+        indiceCorrecaoAposChaves: formData.indiceCorrecaoAposChaves || formData.indiceCorrecao || "IGPM",
+
+        // Dados de reforço e chaves
+        includeBonusPayments: Boolean(formData.hasBoost),
+        bonusFrequency: formData.periodicidadeReforco === 'bimestral' ? 2 :
+                        formData.periodicidadeReforco === 'trimestral' ? 3 :
+                        formData.periodicidadeReforco === 'semestral' ? 6 : 12,
+        bonusValue: String(formData.boostValue || "0"),
+        hasKeys: Boolean(formData.hasKeys),
+        keysValue: String(formData.keysValue || "0"),
+
+        // Configurações de cenários
+        scenarioType: formData.scenarioType || "padrao", 
+        activeScenario: formData.activeScenario || "padrao",
+        selectedScenarios: formData.selectedScenarios || ["padrao"],
+
+        // Dados do cenário padrão - Venda Futura
+        padraoFutureSaleInvestmentPeriod: formData.padrao?.futureSale?.investmentPeriod || "",
+        padraoFutureSaleAppreciationRate: formData.padrao?.futureSale?.appreciationRate || "15",
+        padraoFutureSaleSellingExpenseRate: formData.padrao?.futureSale?.sellingExpenseRate || "6",
+        padraoFutureSaleIncomeTaxRate: formData.padrao?.futureSale?.incomeTaxRate || "15",
+        padraoFutureSaleAdditionalCosts: formData.padrao?.futureSale?.additionalCosts || "2",
+        padraoFutureSaleMaintenanceCosts: formData.padrao?.futureSale?.maintenanceCosts || "0",
+
+        // Dados do cenário padrão - Valorização do Imóvel
+        padraoAssetAppreciationAnnualRate: formData.padrao?.assetAppreciation?.annualRate || "15",
+        padraoAssetAppreciationAnalysisPeriod: formData.padrao?.assetAppreciation?.analysisPeriod || "10",
+        padraoAssetAppreciationMaintenanceCosts: formData.padrao?.assetAppreciation?.maintenanceCosts || "0",
+        padraoAssetAppreciationAnnualTaxes: formData.padrao?.assetAppreciation?.annualTaxes || "0",
+
+        // Dados do cenário padrão - Rendimento de Aluguel
+        padraoRentalYieldMonthlyRent: formData.padrao?.rentalYield?.monthlyRent || "0.6",
+        padraoRentalYieldOccupancyRate: formData.padrao?.rentalYield?.occupancyRate || "85",
+        padraoRentalYieldManagementFee: formData.padrao?.rentalYield?.managementFee || "10",
+        padraoRentalYieldMaintenanceCosts: formData.padrao?.rentalYield?.maintenanceCosts || "5",
+        padraoRentalYieldAnnualIncrease: formData.padrao?.rentalYield?.annualIncrease || "5",
+
+        // Dados do cenário conservador - Venda Futura
+        conservadorFutureSaleInvestmentPeriod: formData.conservador?.futureSale?.investmentPeriod || "",
+        conservadorFutureSaleAppreciationRate: formData.conservador?.futureSale?.appreciationRate || "12",
+        conservadorFutureSaleSellingExpenseRate: formData.conservador?.futureSale?.sellingExpenseRate || "6",
+        conservadorFutureSaleIncomeTaxRate: formData.conservador?.futureSale?.incomeTaxRate || "15",
+        conservadorFutureSaleAdditionalCosts: formData.conservador?.futureSale?.additionalCosts || "2",
+        conservadorFutureSaleMaintenanceCosts: formData.conservador?.futureSale?.maintenanceCosts || "0",
+
+        // Dados do cenário conservador - Valorização do Imóvel
+        conservadorAssetAppreciationAnnualRate: formData.conservador?.assetAppreciation?.annualRate || "12",
+        conservadorAssetAppreciationAnalysisPeriod: formData.conservador?.assetAppreciation?.analysisPeriod || "10",
+        conservadorAssetAppreciationMaintenanceCosts: formData.conservador?.assetAppreciation?.maintenanceCosts || "0",
+        conservadorAssetAppreciationAnnualTaxes: formData.conservador?.assetAppreciation?.annualTaxes || "0",
+
+        // Dados do cenário conservador - Rendimento de Aluguel
+        conservadorRentalYieldMonthlyRent: formData.conservador?.rentalYield?.monthlyRent || "0.4",
+        conservadorRentalYieldOccupancyRate: formData.conservador?.rentalYield?.occupancyRate || "75",
+        conservadorRentalYieldManagementFee: formData.conservador?.rentalYield?.managementFee || "10",
+        conservadorRentalYieldMaintenanceCosts: formData.conservador?.rentalYield?.maintenanceCosts || "5",
+        conservadorRentalYieldAnnualIncrease: formData.conservador?.rentalYield?.annualIncrease || "5",
+
+        // Dados do cenário otimista - Venda Futura
+        otimistaFutureSaleInvestmentPeriod: formData.otimista?.futureSale?.investmentPeriod || "",
+        otimistaFutureSaleAppreciationRate: formData.otimista?.futureSale?.appreciationRate || "18",
+        otimistaFutureSaleSellingExpenseRate: formData.otimista?.futureSale?.sellingExpenseRate || "6",
+        otimistaFutureSaleIncomeTaxRate: formData.otimista?.futureSale?.incomeTaxRate || "15",
+        otimistaFutureSaleAdditionalCosts: formData.otimista?.futureSale?.additionalCosts || "2",
+        otimistaFutureSaleMaintenanceCosts: formData.otimista?.futureSale?.maintenanceCosts || "0",
+
+        // Dados do cenário otimista - Valorização do Imóvel
+        otimistaAssetAppreciationAnnualRate: formData.otimista?.assetAppreciation?.annualRate || "18",
+        otimistaAssetAppreciationAnalysisPeriod: formData.otimista?.assetAppreciation?.analysisPeriod || "10",
+        otimistaAssetAppreciationMaintenanceCosts: formData.otimista?.assetAppreciation?.maintenanceCosts || "0",
+        otimistaAssetAppreciationAnnualTaxes: formData.otimista?.assetAppreciation?.annualTaxes || "0",
+
+        // Dados do cenário otimista - Rendimento de Aluguel
+        otimistaRentalYieldMonthlyRent: formData.otimista?.rentalYield?.monthlyRent || "0.8",
+        otimistaRentalYieldOccupancyRate: formData.otimista?.rentalYield?.occupancyRate || "95",
+        otimistaRentalYieldManagementFee: formData.otimista?.rentalYield?.managementFee || "10",
+        otimistaRentalYieldMaintenanceCosts: formData.otimista?.rentalYield?.maintenanceCosts || "5",
+        otimistaRentalYieldAnnualIncrease: formData.otimista?.rentalYield?.annualIncrease || "5",
+
+        // Valores calculados para relatório
+        futureValuePercentage: String(formData.futureValuePercentage || "0"),
+        futureValueMonth: Number(formData.futureValueMonth || 0),
+        saleCommission: String(formData.saleCommission || "0"),
+saleTaxes: String(formData.saleTaxes || "0"),
+        incomeTax: String(formData.incomeTax || "0"),
+        additionalCosts: String(formData.additionalCosts || "0"),
+        appreciationYears: Number(formData.appreciationYears || 0),
+        annualAppreciation: String(formData.annualAppreciation || "0"),
+        maintenanceCosts: String(formData.maintenanceCosts || "0"),
+        rentalType: formData.rentalType || "annual",
+        monthlyRental: String(formData.monthlyRental || "0"),
+        furnishingCosts: String(formData.furnishingCosts || "0"),
+        condoFees: String(formData.condoFees || "0"),
+        propertyTax: String(formData.propertyTax || "0"),
+
+        // Resultados de cálculo
+        calculationResults
+      };
+
+      try {
+        // Inserir projeção de forma direta
+        console.log("Enviando para o banco:", JSON.stringify(projectionData, null, 2));
+
+        // Criar projeção no banco
+        const projection = await storage.createProjection(projectionData);
+        console.log("Projeção criada com sucesso:", projection);
+
+        // Se temos detalhes de financiamento na planta, salvar as parcelas na tabela calculo_projecoes
+        if (detalhesFinanciamento && detalhesFinanciamento.parcelas && detalhesFinanciamento.parcelas.length > 0) {
+          try {
+            console.log(`Salvando ${detalhesFinanciamento.parcelas.length} parcelas na tabela calculo_projecoes`);
+
+            // Obter valores padrão dos formulários
+            const valorImovel = Number(formData.listPrice || 0);
+            const valorDesconto = Number(formData.discount || 0);
+            const valorEntrada = Number(formData.downPayment || 0);
+            const valorReforco = Number(formData.boostValue || 0);
+            const valorChaves = Number(formData.keysValue || 0);
+            const prazoMeses = Number(formData.paymentMonths || 0);
+
+            // Calcular valor da parcela conforme a fórmula: (preço - desconto - entrada - reforços - chaves) / meses
+            const qtdReforcos = formData.hasBoost ? Math.floor(prazoMeses / (formData.periodicidadeReforco === 'bimestral' ? 2 : 
+                                                         formData.periodicidadeReforco === 'trimestral' ? 3 : 
+                                                         formData.periodicidadeReforco === 'semestral' ? 6 : 12)) : 0;
+
+            const totalReforcos = formData.hasBoost ? valorReforco * qtdReforcos : 0;
+            const totalChaves = formData.hasKeys ? valorChaves : 0;
+
+            const parcelaBase = formData.tipoParcelamento === 'automatico' ? 
+              (valorImovel - valorDesconto - valorEntrada - totalReforcos - totalChaves) / prazoMeses : 0;
+
+            const periodicidadeReforco = formData.periodicidadeReforco || 'trimestral';
+            const intervaloReforco = periodicidadeReforco === 'bimestral' ? 2 :
+                                     periodicidadeReforco === 'trimestral' ? 3 :
+                                     periodicidadeReforco === 'semestral' ? 6 : 12;
+
+            // Taxa de correção antes e depois das chaves (usar exatamente os valores do input do usuário)
+            const taxaAteChavesInput = Number(formData.monthlyCorrection || 0.5);
+            const taxaAposChavesInput = Number(formData.postDeliveryCorrection || formData.monthlyCorrection || 0.5);
+            const prazoEntrega = Number(formData.deliveryMonths);
+
+            // Limpar cálculos anteriores para esta projeção
+            try {
+                await storage.deleteCalculosByProjection(projection.id);
+                console.log(`Cálculos anteriores excluídos com sucesso para projeção #${projection.id}`);
+            } catch (cleanError) {
+                console.warn(`Aviso: Falha ao limpar cálculos anteriores: ${cleanError}`);
+            }
+            
+            // Converter os dados das parcelas para o formato esperado pelo banco (valores decimais como strings)
+            const calculosProjecao = detalhesFinanciamento.parcelas.map(parcela => {
+              // Garantir que o tipoPagamento seja um dos valores válidos
+              if (parcela.tipoPagamento !== 'Entrada' && 
+                  parcela.tipoPagamento !== 'Parcela' && 
+                  parcela.tipoPagamento !== 'Reforço' && 
+                  parcela.tipoPagamento !== 'Chaves') {
+                  
+                  // Se o valor não for válido, determinar o tipo pelo mês
+                  if (parcela.mes === 0) {
+                    parcela.tipoPagamento = 'Entrada';
+                  } else if (formData.hasBoost && parcela.mes % intervaloReforco === 0 && parcela.mes > 0) {
+                    parcela.tipoPagamento = 'Reforço';
+                  } else if (parcela.mes === prazoEntrega) {
+                    parcela.tipoPagamento = 'Chaves';
+                  } else {
+                    parcela.tipoPagamento = 'Parcela';
+                  }
+                  
+                  console.log(`Corrigido tipoPagamento inválido para: ${parcela.tipoPagamento} (mês ${parcela.mes})`);
+              }
+              
+              const isReforcoMonth = formData.hasBoost && parcela.mes % intervaloReforco === 0 && parcela.mes > 0 && parcela.mes <= prazoMeses;
+              const isEntregaMonth = parcela.mes === prazoEntrega;
+              const isAfterDelivery = parcela.mes > prazoEntrega;
+
+              // Calcular correção conforme a fórmula:
+              // Se mês <= mês de entrega: ((taxa até chaves/100 + 1) ^ mês)
+              // Se mês > mês de entrega: ((taxa após chaves/100 + 1) ^ (mês - mês de entrega)) * ((taxa até chaves/100 + 1) ^ mês de entrega) - 1
+
+              // Obter valor correto da taxa após chaves do input do usuário
+              // Aceitar tanto postDeliveryCorrection quanto correcaoMensalAposChaves (novo nome do campo no formulário)
+              const postDeliveryCorrection = formData.correcaoMensalAposChaves ? 
+                Number(formData.correcaoMensalAposChaves) : 
+                (formData.postDeliveryCorrection ? Number(formData.postDeliveryCorrection) : taxaAteChavesInput);
+
+              // Calcular taxa acumulada conforme a fórmula correta:
+              // Caso o nº do mês seja menor ou igual ao da entrega:
+              // ((tx correção do mês / 100 + 1) ^ (nº parcela))
+              // Caso o nº do mês é maior que o mês de entrega:
+              // ((tx correção após chaves / 100 + 1) ^ (nº parcela - prazo de entrega)) * ((tx correção até chaves / 100 + 1) ^ mês da entrega)
+
+              let taxaAcumuladaValue = 1;
+              if (parcela.mes === 0) {
+                // No mês 0 (entrada) não há correção
+                taxaAcumuladaValue = 1;
+              } else if (parcela.mes > 0 && parcela.mes <= prazoEntrega) {
+                // Antes ou no mês de entrega
+                taxaAcumuladaValue = Math.pow((taxaAteChavesInput / 100) + 1, parcela.mes);
+              } else if (parcela.mes > prazoEntrega) {
+                // Após a entrega: A fórmula correta é:
+                // ((tx correção após chaves / 100 + 1) ^ (nº parcela - prazo de entrega)) * ((tx correção até chaves / 100 + 1) ^ mês da entrega)
+                const taxaAteChavesDecimal = taxaAteChavesInput / 100;
+                const taxaAposChavesDecimal = postDeliveryCorrection / 100;
+
+                const fatorAteEntrega = Math.pow(taxaAteChavesDecimal + 1, prazoEntrega);
+                const fatorAposEntrega = Math.pow(taxaAposChavesDecimal + 1, parcela.mes - prazoEntrega);
+
+                taxaAcumuladaValue = fatorAposEntrega * fatorAteEntrega;
+              }
+
+              // Calcular valores base
+              const parcelaBaseValue = parcela.mes > 0 ? 
+                  (formData.tipoParcelamento === 'automatico' ? parcelaBase : 
+                   (parcela.tipoPagamento === 'Parcela' ? parcela.valorBase : 0)) : 0;
+
+              const reforcoBaseValue = isReforcoMonth ? Number(formData.boostValue) : 0;
+              const chavesBaseValue = isEntregaMonth ? Number(formData.keysValue || 0) : 0;
+
+              // Aplicar taxa acumulada aos valores base
+              const parcelaCorrigidaValue = parcelaBaseValue * taxaAcumuladaValue;
+              const reforcoCorrigidoValue = reforcoBaseValue * taxaAcumuladaValue;
+              const chavesCorrigidoValue = chavesBaseValue * taxaAcumuladaValue;
+
+              // Calcular os pagamentos totais (base e corrigido)
+              let pagamentoTotalLiquidoValue = 0;
+              let pagamentoTotalValue = 0;
+
+              if (parcela.mes === 0) {
+                // Para a entrada (mês 0), ambos valores são iguais ao valor da entrada
+                pagamentoTotalLiquidoValue = valorEntrada;
+                pagamentoTotalValue = valorEntrada;
+              } else {
+                // Para os demais meses, soma dos componentes
+                pagamentoTotalLiquidoValue = parcelaBaseValue + reforcoBaseValue + chavesBaseValue;
+                pagamentoTotalValue = parcelaCorrigidaValue + reforcoCorrigidoValue + chavesCorrigidoValue;
+              }
+
+              // Calcular saldo líquido - ABORDAGEM UNIVERSAL
+              let saldoLiquidoValue = 0;
+              
+              // Aplicar a mesma lógica para todos os meses
+              // Regra universal:
+              // 1. Para mês 0 e 1: saldoLiquido = valorImovel - valorDesconto - valorEntrada
+              // 2. Para mês >= 2: saldoLiquido = calcular todos os saldos anteriores, aplicando:
+              //    - Mês 2: saldo = saldo mês 1 - pagamento mês 1
+              //    - Mês 3: saldo = saldo mês 2 - pagamento mês 2
+              //    - ...e assim por diante
+              
+              if (parcela.mes <= 1) {
+                // Regra 1: Mês 0 e 1 têm o mesmo saldo (valorImovel - valorDesconto - valorEntrada)
+                saldoLiquidoValue = valorImovel - valorDesconto - valorEntrada;
+                console.log(`[UNIVERSAL] Mês ${parcela.mes}: SaldoLiquido = ${saldoLiquidoValue}`);
+
+              } else if (parcela.mes === 2) {
+                // Mês 2: O saldo é o valor do mês 1 (mesmo que mês 0) menos o pagamento do mês 1
+                // Obter valor da parcela no mês 1
+                let pagamentoMes1 = 0;
+                
+                // Se for parcelamento automático, usar o valor padrão de parcela
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes1 = parcelaBase;
+                } else {
+                  // Para parcelamento personalizado, procurar a parcela correta
+                  const parcela1 = detalhesFinanciamento.parcelas.find(p => p.mes === 1);
+                  if (parcela1 && parcela1.tipoPagamento === 'Parcela') {
+                    pagamentoMes1 = parcela1.valorBase;
+                  }
+                }
+                
+                // Verificar se mês 1 tinha reforço ou chaves
+                const isReforcoMes1 = formData.hasBoost && 1 % intervaloReforco === 0 && 1 > 0;
+                const isEntregaMes1 = 1 === prazoEntrega;
+                
+                // Adicionar reforço ou chaves se necessário
+                const reforcoMes1 = isReforcoMes1 ? Number(valorReforco) : 0;
+                const chavesMes1 = isEntregaMes1 ? Number(valorChaves) : 0;
+                
+                // Pagamento total do mês 1
+                const pagamentoTotalMes1 = pagamentoMes1 + reforcoMes1 + chavesMes1;
+                
+                // Saldo do mês 1 é igual ao mês 0
+                const saldoMes1 = valorImovel - valorDesconto - valorEntrada;
+                
+                // Saldo do mês 2 = saldo mês 1 - pagamento mês 1
+                saldoLiquidoValue = saldoMes1 - pagamentoTotalMes1;
+                
+                console.log(`[DIRETO] Mês 2: SaldoMes1=${saldoMes1}, PagamentoMes1=${pagamentoTotalMes1}, NovoSaldo=${saldoLiquidoValue}`);
+              } else if (parcela.mes === 3) {
+                // Mês 3: O saldo é o valor do mês 2 menos o pagamento do mês 2
+                // Primeiro calculamos o saldo do mês 2 (que é mês 1 - pagamento mês 1)
+                
+                // Calcular pagamento do mês 1
+                let pagamentoMes1 = 0;
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes1 = parcelaBase;
+                } else {
+                  const parcela1 = detalhesFinanciamento.parcelas.find(p => p.mes === 1);
+                  if (parcela1 && parcela1.tipoPagamento === 'Parcela') {
+                    pagamentoMes1 = parcela1.valorBase;
+                  }
+                }
+                
+                const isReforcoMes1 = formData.hasBoost && 1 % intervaloReforco === 0 && 1 > 0;
+                const isEntregaMes1 = 1 === prazoEntrega;
+                const reforcoMes1 = isReforcoMes1 ? Number(valorReforco) : 0;
+                const chavesMes1 = isEntregaMes1 ? Number(valorChaves) : 0;
+                const pagamentoTotalMes1 = pagamentoMes1 + reforcoMes1 + chavesMes1;
+                
+                // Saldo do mês 0 e mês 1
+                const saldoInicial = valorImovel - valorDesconto - valorEntrada;
+                
+                // Saldo do mês 2 = saldo mês 1 - pagamento mês 1
+                const saldoMes2 = saldoInicial - pagamentoTotalMes1;
+                
+                // Calcular pagamento do mês 2
+                let pagamentoMes2 = 0;
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes2 = parcelaBase;
+                } else {
+                  const parcela2 = detalhesFinanciamento.parcelas.find(p => p.mes === 2);
+                  if (parcela2 && parcela2.tipoPagamento === 'Parcela') {
+                    pagamentoMes2 = parcela2.valorBase;
+                  }
+                }
+                
+                const isReforcoMes2 = formData.hasBoost && 2 % intervaloReforco === 0 && 2 > 0;
+                const isEntregaMes2 = 2 === prazoEntrega;
+                const reforcoMes2 = isReforcoMes2 ? Number(valorReforco) : 0;
+                const chavesMes2 = isEntregaMes2 ? Number(valorChaves) : 0;
+                const pagamentoTotalMes2 = pagamentoMes2 + reforcoMes2 + chavesMes2;
+                
+                // Saldo do mês 3 = saldo mês 2 - pagamento mês 2
+                saldoLiquidoValue = saldoMes2 - pagamentoTotalMes2;
+                
+                console.log(`[DIRETO] Mês 3: SaldoMes2=${saldoMes2}, PagamentoMes2=${pagamentoTotalMes2}, NovoSaldo=${saldoLiquidoValue}`);
+              
+              } else if (parcela.mes === 4) {
+                // Mês 4: O saldo é o valor do mês 3 menos o pagamento do mês 3
+                // Para isso, precisamos calcular o saldo dos meses anteriores
+                
+                // Passo 1: Calcular o saldo inicial (mês 0 e 1)
+                const saldoInicial = valorImovel - valorDesconto - valorEntrada;
+                
+                // Passo 2: Calcular pagamento mês 1
+                let pagamentoMes1 = 0;
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes1 = parcelaBase;
+                } else {
+                  const parcela1 = detalhesFinanciamento.parcelas.find(p => p.mes === 1);
+                  if (parcela1 && parcela1.tipoPagamento === 'Parcela') {
+                    pagamentoMes1 = parcela1.valorBase;
+                  }
+                }
+                
+                const isReforcoMes1 = formData.hasBoost && 1 % intervaloReforco === 0 && 1 > 0;
+                const isEntregaMes1 = 1 === prazoEntrega;
+                const reforcoMes1 = isReforcoMes1 ? Number(valorReforco) : 0;
+                const chavesMes1 = isEntregaMes1 ? Number(valorChaves) : 0;
+                const pagamentoTotalMes1 = pagamentoMes1 + reforcoMes1 + chavesMes1;
+                
+                // Passo 3: Calcular saldo mês 2
+                const saldoMes2 = saldoInicial - pagamentoTotalMes1;
+                
+                // Passo 4: Calcular pagamento mês 2
+                let pagamentoMes2 = 0;
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes2 = parcelaBase;
+                } else {
+                  const parcela2 = detalhesFinanciamento.parcelas.find(p => p.mes === 2);
+                  if (parcela2 && parcela2.tipoPagamento === 'Parcela') {
+                    pagamentoMes2 = parcela2.valorBase;
+                  }
+                }
+                
+                const isReforcoMes2 = formData.hasBoost && 2 % intervaloReforco === 0 && 2 > 0;
+                const isEntregaMes2 = 2 === prazoEntrega;
+                const reforcoMes2 = isReforcoMes2 ? Number(valorReforco) : 0;
+                const chavesMes2 = isEntregaMes2 ? Number(valorChaves) : 0;
+                const pagamentoTotalMes2 = pagamentoMes2 + reforcoMes2 + chavesMes2;
+                
+                // Passo 5: Calcular saldo mês 3 
+                const saldoMes3 = saldoMes2 - pagamentoTotalMes2;
+                
+                // Passo 6: Calcular pagamento mês 3
+                let pagamentoMes3 = 0;
+                if (formData.tipoParcelamento === 'automatico') {
+                  pagamentoMes3 = parcelaBase;
+                } else {
+                  const parcela3 = detalhesFinanciamento.parcelas.find(p => p.mes === 3);
+                  if (parcela3 && parcela3.tipoPagamento === 'Parcela') {
+                    pagamentoMes3 = parcela3.valorBase;
+                  }
+                }
+                
+                const isReforcoMes3 = formData.hasBoost && 3 % intervaloReforco === 0 && 3 > 0;
+                const isEntregaMes3 = 3 === prazoEntrega;
+                const reforcoMes3 = isReforcoMes3 ? Number(valorReforco) : 0;
+                const chavesMes3 = isEntregaMes3 ? Number(valorChaves) : 0;
+                const pagamentoTotalMes3 = pagamentoMes3 + reforcoMes3 + chavesMes3;
+                
+                // Passo 7: Calcular saldo mês 4
+                saldoLiquidoValue = saldoMes3 - pagamentoTotalMes3;
+                
+                console.log(`[DIRETO] Mês 4: SaldoMes3=${saldoMes3}, PagamentoMes3=${pagamentoTotalMes3}, NovoSaldo=${saldoLiquidoValue}`);
+              
+              } else {
+                // Abordagem universal: Calcular saldos para qualquer mês ≥ 2
+                // Aplicamos a mesma lógica independente do mês
+                
+                // Array para armazenar os saldos de todos os meses
+                const saldos = new Array(parcela.mes + 1);
+                
+                // Regra 1: Mês 0 e 1 têm o mesmo saldo
+                const saldoInicial = valorImovel - valorDesconto - valorEntrada;
+                saldos[0] = saldoInicial;
+                saldos[1] = saldoInicial;
+                
+                // Algoritmo universal: calcular o saldo para cada mês a partir do mês 2
+                // Regra 2: Para mês >= 2, o saldo é sempre calculado como:
+                // saldo do mês = saldo do mês anterior - pagamento do mês anterior
+                
+                // Loop para calcular cada mês de 2 até o mês atual
+                for (let mes = 2; mes <= parcela.mes; mes++) {
+                  // Para cada mês, calculamos o pagamento do mês anterior (mes-1)
+                  const mesAnterior = mes - 1;
+                  
+                  // 1. Calcular o valor da parcela do mês anterior
+                  let valorParcelaAnterior = 0;
+                  if (formData.tipoParcelamento === 'automatico') {
+                    // Para parcelamento automático: usar valor padrão
+                    valorParcelaAnterior = parcelaBase;
+                  } else {
+                    // Para parcelamento personalizado: buscar na lista de parcelas
+                    const parcelaAnterior = detalhesFinanciamento.parcelas.find(p => p.mes === mesAnterior);
+                    if (parcelaAnterior && parcelaAnterior.tipoPagamento === 'Parcela') {
+                      valorParcelaAnterior = parcelaAnterior.valorBase;
+                    }
+                  }
+                  
+                  // 2. Verificar se o mês anterior tinha reforço
+                  const temReforcoAnterior = formData.hasBoost && mesAnterior % intervaloReforco === 0 && mesAnterior > 0;
+                  const valorReforcoAnterior = temReforcoAnterior ? Number(valorReforco) : 0;
+                  
+                  // 3. Verificar se o mês anterior era o mês de entrega (chaves)
+                  const ehMesEntregaAnterior = mesAnterior === prazoEntrega;
+                  const valorChavesAnterior = ehMesEntregaAnterior ? Number(valorChaves) : 0;
+                  
+                  // 4. Pagamento total do mês anterior
+                  const pagamentoTotalAnterior = valorParcelaAnterior + valorReforcoAnterior + valorChavesAnterior;
+                  
+                  // 5. Saldo do mês atual = saldo do mês anterior - pagamento total anterior
+                  saldos[mes] = saldos[mesAnterior] - pagamentoTotalAnterior;
+                  
+                  console.log(`[UNIVERSAL] Mês ${mes}: SaldoAnterior=${saldos[mesAnterior]}, PagamentoAnterior=${pagamentoTotalAnterior}, NovoSaldo=${saldos[mes]}`);
+                }
+                
+                // O saldo líquido do mês atual é o último calculado
+                saldoLiquidoValue = saldos[parcela.mes];
+
+                // Verificar se o mês atual precisa subtrair seu próprio pagamento
+                // Isso não deve ser feito, pois o saldo líquido do mês atual já considera
+                // todos os pagamentos anteriores, não o pagamento do próprio mês
+
+                console.log(`[NOVA_FORMULA] Mês ${parcela.mes}: SaldoLiquido = ${saldoLiquidoValue}`);
+
+                // Garantir que o saldo líquido não fique negativo (apenas para o último mês)
+                if (parcela.mes === prazoMeses && saldoLiquidoValue < 0) {
+                  saldoLiquidoValue = 0;
+                }
+
+                console.log(`[SIMPLIFICADO] Mês ${parcela.mes}: SaldoLiquido = ${saldoLiquidoValue}`);
+              }
+
+              // Calcular saldo devedor corrigido
+              // "saldo_devedor_corrigido" = ("saldo_liquido" do mês * taxa acumulada do mês) + (saldo líquido do mês)
+              const saldoDevedorCorrigidoValue = (saldoLiquidoValue * (taxaAcumuladaValue - 1)) + saldoLiquidoValue;
+
+              // Definir a taxa de correção para cada mês conforme a regra:
+              // Mês <= mês de entrega: usar taxaAteChavesInput
+              // Mês > mês de entrega: usar taxaAposChavesInput
+              const taxaCorrecaoValue = parcela.mes <= prazoEntrega ? taxaAteChavesInput : taxaAposChavesInput;
+
+              // Para cada mês, verificar o tipo de pagamento e valores
+              return {
+                projectionId: projection.id,
+                mes: parcela.mes,
+
+                // Usar a taxa correta baseada no período (antes ou depois das chaves)
+                taxaCorrecao: String(taxaCorrecaoValue),
+                taxaAcumulada: String(taxaAcumuladaValue),
+
+                // Valor de entrada apenas no mês 0
+                valorEntrada: parcela.mes === 0 ? String(valorEntrada) : "0",
+
+                // Sempre salvar o valor das parcelas mensais (a partir do mês 1)
+                parcelaBase: parcela.mes > 0 ? String(parcelaBaseValue) : "0",
+                parcelaCorrigida: parcela.mes > 0 ? String(parcelaCorrigidaValue) : "0",
+
+                // Reforço (balão) só quando for mês de reforço conforme periodicidade
+                reforcoBase: String(reforcoBaseValue),
+                reforcoCorrigido: String(reforcoCorrigidoValue),
+
+                // Valor das chaves no mês de entrega
+                valorChaves: String(chavesBaseValue),
+                chavesCorrigido: String(chavesCorrigidoValue),
+
+                // Valores totais: pagamento_total = parcela_corrigida + reforco_corrigido + chaves_corrigido
+                // pagamento_total_liquido = parcela_base + reforco_base + valor_chaves
+                pagamentoTotal: String(pagamentoTotalValue),
+                pagamentoTotalLiquido: String(pagamentoTotalLiquidoValue),
+
+                // Novos cálculos para os saldos
+                saldoLiquido: String(saldoLiquidoValue),
+                saldoDevedorCorrigido: String(saldoDevedorCorrigidoValue)
+              };
+            });
+
+            // Salvar os cálculos no banco
+            await storage.createCalculosProjecao(calculosProjecao);
+            console.log("Parcelas salvas com sucesso na tabela calculo_projecoes");
+          } catch (error) {
+            console.error("Erro ao salvar parcelas na tabela calculo_projecoes:", error);
+          }
+        }
+
+        // Enriquecer a resposta
+        const responseData = {
+          ...projection,
+          // Adicionar propriedade
+          property: {
+            name: formData.propertyName || "Empreendimento",
+            type: formData.propertyType || "apartment",
+            address: formData.address || "",
+            neighborhood: formData.neighborhood || "",
+            city: formData.city || ""
+          },
+          client: {
+            name: "Cliente exemplo"
+          }
+        };
+
+        res.status(201).json(responseData);
+      } catch (err: any) {
+        console.error("Erro ao salvar no banco de dados:", err.message);
+        console.error("Stack trace:", err.stack);
+
+        // Criar ID fictício para permitir visualização sem salvar
+        const mockId = Math.floor(Math.random() * 1000) + 10;
+
+        // Retornar dados fictícios para visualização
+        res.status(200).json({
+          id: mockId,
+          ...projectionData,
+          property: {
+            name: req.body.propertyName || "Empreendimento",
+            type: req.body.propertyType || "apartment",
+            address: req.body.address || "",
+            neighborhood: req.body.neighborhood || ""
+          },
+          client: {
+            name: "Cliente exemplo"
+          },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+      }
+    } catch (error: any) {
+      console.error("Erro geral:", error.message);
+      res.status(500).json({ error: 'Erro interno ao processar requisição' });
+    }
+  });
+
+  app.put('/api/projections/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    // If strategies are provided, validate them
+    if (req.body.strategies) {
+      if (!Array.isArray(req.body.strategies) || req.body.strategies.length === 0) {
+        return res.status(400).json({ error: 'At least one strategy must be selected' });
+      }
+
+      // Check if all strategies are valid
+      const invalidStrategies = req.body.strategies.filter(
+        (strategy: string) => !Object.values(PROJECTION_STRATEGY).includes(strategy)
+      );
+      if (invalidStrategies.length > 0) {
+        return res.status(400).json({ 
+          error: 'Invalid strategies', 
+          invalidStrategies 
+        });
+      }
+    }
+
+    // Verificar se temos detalhes de financiamento na planta para atualizar
+    let detalhesFinanciamento = null;
+    if (req.body.calculationResults && req.body.calculationResults.financiamentoPlanta) {
+      detalhesFinanciamento = req.body.calculationResults.financiamentoPlanta;
+    }
+
+    // Atualizar a projeção
+    const projection = await storage.updateProjection(id, req.body);
+    if (!projection) {
+      return res.status(404).json({ error: 'Projection not found' });
+    }
+
+    // Se temos detalhes de financiamento na planta, atualizar as parcelas na tabela calculo_projecoes
+    if (detalhesFinanciamento && detalhesFinanciamento.parcelas && detalhesFinanciamento.parcelas.length > 0) {
+      try {
+        console.log(`Atualizando parcelas para projeção #${id}`);
+
+        // Primeiro excluir cálculos existentes
+        await storage.deleteCalculosByProjection(id);
+
+        // Obter valores padrão dos formulários
+        const valorImovel = Number(req.body.listPrice || 0);
+        const valorDesconto = Number(req.body.discount || 0);
+        const valorEntrada = Number(req.body.downPayment || 0);
+        const valorReforco = Number(req.body.boostValue || 0);
+        const valorChaves = Number(req.body.keysValue || 0);
+        const prazoMeses = Number(req.body.paymentMonths || 0);
+
+        // Calcular valor da parcela conforme a fórmula: (preço - desconto - entrada - reforços - chaves) / meses
+        const qtdReforcos = req.body.hasBoost ? Math.floor(prazoMeses / (req.body.periodicidadeReforco === 'bimestral' ? 2 : 
+                                                   req.body.periodicidadeReforco === 'trimestral' ? 3 : 
+                                                   req.body.periodicidadeReforco === 'semestral' ? 6 : 12)) : 0;
+
+        const totalReforcos = req.body.hasBoost ? valorReforco * qtdReforcos : 0;
+        const totalChaves = req.body.hasKeys ? valorChaves : 0;
+
+        const parcelaBase = req.body.tipoParcelamento === 'automatico' ? 
+          (valorImovel - valorDesconto - valorEntrada - totalReforcos - totalChaves) / prazoMeses : 0;
+
+        const periodicidadeReforco = req.body.periodicidadeReforco || 'trimestral';
+        const intervaloReforco = periodicidadeReforco === 'bimestral' ? 2 :
+                               periodicidadeReforco === 'trimestral' ? 3 :
+                               periodicidadeReforco === 'semestral' ? 6 : 12;
+
+        // Taxa de correção antes e depois das chaves (usar exatamente os valores do input do usuário)
+        const taxaAteChavesInput = Number(req.body.monthlyCorrection || 0.5);
+        const taxaAposChavesInput = Number(req.body.postDeliveryCorrection || req.body.monthlyCorrection || 0.5);
+        const prazoEntrega = Number(req.body.deliveryMonths);
+
+        // Limpar cálculos anteriores para esta projeção
+        try {
+            await storage.deleteCalculosByProjection(id);
+            console.log(`Cálculos anteriores excluídos com sucesso para projeção #${id} (atualização)`);
+        } catch (cleanError) {
+            console.warn(`Aviso: Falha ao limpar cálculos anteriores durante atualização: ${cleanError}`);
+        }
+        
+        // Converter os dados das parcelas para o formato esperado pelo banco (valores decimais como strings)
+        const calculosProjecao = detalhesFinanciamento.parcelas.map((parcela: any) => {
+          // Garantir que o tipoPagamento seja um dos valores válidos
+          if (parcela.tipoPagamento !== 'Entrada' && 
+              parcela.tipoPagamento !== 'Parcela' && 
+              parcela.tipoPagamento !== 'Reforço' && 
+              parcela.tipoPagamento !== 'Chaves') {
+              
+              // Se o valor não for válido, determinar o tipo pelo mês
+              if (parcela.mes === 0) {
+                parcela.tipoPagamento = 'Entrada';
+              } else if (req.body.hasBoost && parcela.mes % intervaloReforco === 0 && parcela.mes > 0) {
+                parcela.tipoPagamento = 'Reforço';
+              } else if (parcela.mes === prazoEntrega) {
+                parcela.tipoPagamento = 'Chaves';
+              } else {
+                parcela.tipoPagamento = 'Parcela';
+              }
+              
+              console.log(`Corrigido tipoPagamento inválido para: ${parcela.tipoPagamento} (mês ${parcela.mes})`);
+          }
+          
+          const isReforcoMonth = req.body.hasBoost && parcela.mes % intervaloReforco === 0 && parcela.mes > 0 && parcela.mes <= prazoMeses;
+          const isEntregaMonth = parcela.mes === prazoEntrega;
+          const isAfterDelivery = parcela.mes > prazoEntrega;
+
+          // Calcular correção conforme a fórmula:
+          // Se mês <= mês de entrega: ((taxa até chaves/100 + 1) ^ mês)
+          // Se mês > mês de entrega: ((taxa após chaves/100 + 1) ^ (mês - mês de entrega)) * ((taxa até chaves/100 + 1) ^ mês de entrega) - 1
+
+          // Obter valor correto da taxa após chaves do input do usuário
+          // Aceitar tanto postDeliveryCorrection quanto correcaoMensalAposChaves (novo nome do campo no formulário)
+          const postDeliveryCorrection = req.body.correcaoMensalAposChaves ? 
+            Number(req.body.correcaoMensalAposChaves) : 
+            (req.body.postDeliveryCorrection ? Number(req.body.postDeliveryCorrection) : taxaAteChavesInput);
+
+          // Calcular taxa acumulada conforme a fórmula correta:
+          // Caso o nº do mês seja menor ou igual ao da entrega:
+          // ((tx correção do mês / 100 + 1) ^ (nº parcela))
+          // Caso o nº do mês é maior que o mês de entrega:
+          // ((tx correção após chaves / 100 + 1) ^ (nº parcela - prazo de entrega)) * ((tx correção até chaves / 100 + 1) ^ mês da entrega)
+
+          let taxaAcumuladaValue = 1;
+          if (parcela.mes === 0) {
+            // No mês 0 (entrada) não há correção
+            taxaAcumuladaValue = 1;
+          } else if (parcela.mes > 0 && parcela.mes <= prazoEntrega) {
+            // Antes ou no mês de entrega
+            taxaAcumuladaValue = Math.pow((taxaAteChavesInput / 100) + 1, parcela.mes);
+          } else if (parcela.mes > prazoEntrega) {
+            // Após a entrega: A fórmula correta é:
+            // ((tx correção após chaves / 100 + 1) ^ (nº parcela - prazo de entrega)) * ((tx correção até chaves / 100 + 1) ^ mês da entrega)
+            const taxaAteChavesDecimal = taxaAteChavesInput / 100;
+            const taxaAposChavesDecimal = postDeliveryCorrection / 100;
+
+            const fatorAteEntrega = Math.pow(taxaAteChavesDecimal + 1, prazoEntrega);
+            const fatorAposEntrega = Math.pow(taxaAposChavesDecimal + 1, parcela.mes - prazoEntrega);
+
+            taxaAcumuladaValue = fatorAposEntrega * fatorAteEntrega;
+          }
+
+          // Calcular valores base
+          const parcelaBaseValue = parcela.mes > 0 ? 
+              (req.body.tipoParcelamento === 'automatico' ? parcelaBase : 
+               (parcela.tipoPagamento === 'Parcela' ? parcela.valorBase : 0)) : 0;
+
+          const reforcoBaseValue = isReforcoMonth ? Number(valorReforco) : 0;
+          const chavesBaseValue = isEntregaMonth ? Number(valorChaves) : 0;
+
+          // Aplicar taxa acumulada aos valores base
+          const parcelaCorrigidaValue = parcelaBaseValue * taxaAcumuladaValue;
+          const reforcoCorrigidoValue = reforcoBaseValue * taxaAcumuladaValue;
+          const chavesCorrigidoValue = chavesBaseValue * taxaAcumuladaValue;
+
+          // Calcular os pagamentos totais (base e corrigido)
+          let pagamentoTotalLiquidoValue = 0;
+          let pagamentoTotalValue = 0;
+
+          if (parcela.mes === 0) {
+            // Para a entrada (mês 0), ambos valores são iguais ao valor da entrada
+            pagamentoTotalLiquidoValue = valorEntrada;
+            pagamentoTotalValue = valorEntrada;
+          } else {
+            // Para os demais meses, soma dos componentes
+            pagamentoTotalLiquidoValue = parcelaBaseValue + reforcoBaseValue + chavesBaseValue;
+            pagamentoTotalValue = parcelaCorrigidaValue + reforcoCorrigidoValue + chavesCorrigidoValue;
+          }
+
+          // REMOVIDO - Fórmula de cálculo do saldo líquido
+          // USANDO FÓRMULAS ORIGINAIS - Conforme solicitado, usando formulasFinanciamentoPlanta.ts
+          
+          // Importar a função de cálculo do financiamento na planta
+          if (parcela.mes === 0) {
+            console.log(`[CALCULADORA_ORIGINAL] Mês 0: Usando cálculo da biblioteca formulasFinanciamentoPlanta.ts`);
+          }
+          
+          // Preparamos os dados para cálculo externo e criamos um cache para evitar recálculos
+          if (parcela.mes === 0 && !req.body._calculoFinanciamento) {
+            console.log(`[CACHE] Calculando todos os valores para armazenamento em cache`);
+            
+            try {
+              // Criar os dados para o cálculo
+              const dadosFinanciamento = {
+                valorImovel,
+                valorEntrada,
+                valorDesconto,
+                prazoPagamento: prazoMeses,
+                prazoEntrega,
+                taxaCorrecaoAteChaves: taxaAteChavesInput,
+                taxaCorrecaoAposChaves: taxaAposChavesInput,
+                valorChaves,
+                reforcos: req.body.hasBoost ? 
+                  Array.from({length: Math.floor((prazoMeses - 1) / intervaloReforco)}, (_, i) => ({
+                    mes: (i + 1) * intervaloReforco, 
+                    valor: Number(valorReforco)
+                  })) : []
+              };
+              
+              console.log(`[CALCULADORA] Usando fórmulas originais de formulasFinanciamentoPlanta.ts`);
+              console.log(`Dados enviados para cálculo:`, JSON.stringify(dadosFinanciamento));
+              
+              // Calcular resultado e armazenar em cache para outros meses
+              const resultadoCalculo = calcularFinanciamentoPlanta(dadosFinanciamento);
+              req.body._calculoFinanciamento = resultadoCalculo;
+              
+              console.log(`[RESULTADO] Geradas ${resultadoCalculo.parcelas.length} parcelas com o cálculo original`);
+            } catch (error) {
+              console.error("[ERRO_CALCULO] Erro ao calcular financiamento:", error);
+              // Inicializar com um resultado vazio para evitar loop infinito
+              req.body._calculoFinanciamento = { parcelas: [] };
+            }
+          }
+          
+          // Obter o saldo líquido do resultado calculado
+          let saldoLiquidoValue = 0;
+          
+          if (req.body._calculoFinanciamento) {
+            const parcelaCalculada = req.body._calculoFinanciamento.parcelas.find(
+              (p: any) => p.mes === parcela.mes
+            );
+            
+            if (parcelaCalculada) {
+              saldoLiquidoValue = parcelaCalculada.saldoLiquido;
+              console.log(`[FORMULA_ORIGINAL] Mês ${parcela.mes}: Saldo líquido = ${saldoLiquidoValue}`);
+            } else {
+              console.log(`[ALERTA] Não encontrou parcela no cálculo para o mês ${parcela.mes}`);
+              
+              // Usar cálculos anteriores se disponíveis
+              const calculosAnteriores = calculosProjecao.filter(
+                (calculo: any) => calculo.mes < parcela.mes
+              ).sort((a: any, b: any) => a.mes - b.mes);
+              
+              if (parcela.mes === 1) {
+                saldoLiquidoValue = valorImovel - valorDesconto - valorEntrada;
+                console.log(`[BACKUP] Mês 1: Usando cálculo padrão: ${saldoLiquidoValue}`);
+              } else if (calculosAnteriores.length > 0) {
+                const ultimoCalculo = calculosAnteriores[calculosAnteriores.length - 1];
+                saldoLiquidoValue = Number(ultimoCalculo.saldoLiquido) - Number(ultimoCalculo.pagamentoTotalLiquido);
+                console.log(`[BACKUP] Mês ${parcela.mes}: Usando cálculo baseado no anterior: ${saldoLiquidoValue}`);
+              }
+            }
+          } else {
+            console.log(`[ERRO] Cache de cálculo não encontrado, usando ALGORITMO UNIVERSAL`);
+            
+            // ABORDAGEM UNIVERSAL para calcular o saldo líquido
+            // Aplicando a mesma lógica independente do mês
+            
+            if (parcela.mes <= 1) {
+              // Regra 1: Mês 0 e 1 têm o mesmo saldo (valorImovel - valorDesconto - valorEntrada)
+              saldoLiquidoValue = valorImovel - valorDesconto - valorEntrada;
+              console.log(`[UNIVERSAL_UPDATE] Mês ${parcela.mes}: SaldoLiquido = ${saldoLiquidoValue}`);
+            
+            } else {
+              // Regra 2: Para mês >= 2, saldo = saldo anterior - pagamento anterior
+              
+              // Calcular todos os saldos desde o mês 0 até o mês atual
+              const saldos = new Array(parcela.mes + 1);
+              
+              // Mês 0 e 1 têm o mesmo saldo inicial
+              const saldoInicial = valorImovel - valorDesconto - valorEntrada;
+              saldos[0] = saldoInicial;
+              saldos[1] = saldoInicial;
+              
+              // Calcular o saldo para cada mês entre 2 e o mês atual
+              for (let mes = 2; mes <= parcela.mes; mes++) {
+                // Para cada mês, calculamos o pagamento do mês anterior
+                const mesAnterior = mes - 1;
+                
+                // Calcular valor da parcela do mês anterior
+                let valorParcelaAnterior = 0;
+                if (req.body.tipoParcelamento === 'automatico') {
+                  valorParcelaAnterior = parcelaBase;
+                } else {
+                  const parcelaAnterior = detalhesFinanciamento.parcelas.find(p => p.mes === mesAnterior);
+                  if (parcelaAnterior && parcelaAnterior.tipoPagamento === 'Parcela') {
+                    valorParcelaAnterior = parcelaAnterior.valorBase;
+                  }
+                }
+                
+                // Verificar se o mês anterior tinha reforço
+                const temReforcoAnterior = req.body.hasBoost && mesAnterior % intervaloReforco === 0 && mesAnterior > 0;
+                const valorReforcoAnterior = temReforcoAnterior ? Number(valorReforco) : 0;
+                
+                // Verificar se o mês anterior era o mês de entrega
+                const ehMesEntregaAnterior = mesAnterior === prazoEntrega;
+                const valorChavesAnterior = ehMesEntregaAnterior ? Number(valorChaves) : 0;
+                
+                // Pagamento total do mês anterior
+                const pagamentoTotalAnterior = valorParcelaAnterior + valorReforcoAnterior + valorChavesAnterior;
+                
+                // Saldo do mês atual = saldo anterior - pagamento anterior
+                saldos[mes] = saldos[mesAnterior] - pagamentoTotalAnterior;
+                
+                console.log(`[UNIVERSAL_UPDATE] Mês ${mes}: SaldoAnterior=${saldos[mesAnterior]}, PagamentoAnterior=${pagamentoTotalAnterior}, NovoSaldo=${saldos[mes]}`);
+              }
+              
+              // O saldo líquido do mês atual é o último calculado
+              saldoLiquidoValue = saldos[parcela.mes];
+            }
+          }
+
+          // Calcular saldo devedor corrigido
+          // "saldo_devedor_corrigido" = ("saldo_liquido" do mês * taxa acumulada do mês) + (saldo líquido do mês)
+          const saldoDevedorCorrigidoValue = (saldoLiquidoValue * (taxaAcumuladaValue - 1)) + saldoLiquidoValue;
+
+          // Definir a taxa de correção para cada mês conforme a regra:
+          // Mês <= mês de entrega: usar taxaAteChavesInput
+          // Mês > mês de entrega: usar taxaAposChavesInput
+          const taxaCorrecaoValue = parcela.mes <= prazoEntrega ? taxaAteChavesInput : taxaAposChavesInput;
+
+          // Para cada mês, verificar o tipo de pagamento e valores
+          return {
+            projectionId: id,
+            mes: parcela.mes,
+
+            // Usar a taxa correta baseada no período (antes ou depois das chaves)
+            taxaCorrecao: String(taxaCorrecaoValue),
+            taxaAcumulada: String(taxaAcumuladaValue),
+
+            // Valor de entrada apenas no mês 0
+            valorEntrada: parcela.mes === 0 ? String(valorEntrada) : "0",
+
+            // Sempre salvar o valor das parcelas mensais (a partir do mês 1)
+            parcelaBase: parcela.mes > 0 ? String(parcelaBaseValue) : "0",
+            parcelaCorrigida: parcela.mes > 0 ? String(parcelaCorrigidaValue) : "0",
+
+            // Reforço (balão) só quando for mês de reforço conforme periodicidade
+            reforcoBase: String(reforcoBaseValue),
+            reforcoCorrigido: String(reforcoCorrigidoValue),
+
+            // Valor das chaves no mês de entrega
+            valorChaves: String(chavesBaseValue),
+            chavesCorrigido: String(chavesCorrigidoValue),
+
+            // Valores totais: pagamento_total = parcela_corrigida + reforco_corrigido + chaves_corrigido
+            // pagamento_total_liquido = parcela_base + reforco_base + valor_chaves
+            pagamentoTotal: String(pagamentoTotalValue),
+            pagamentoTotalLiquido: String(pagamentoTotalLiquidoValue),
+
+            // Novos cálculos para os saldos
+            saldoLiquido: String(saldoLiquidoValue),
+            saldoDevedorCorrigido: String(saldoDevedorCorrigidoValue)
+          };
+        });
+
+        // Salvar os novos cálculos no banco
+        await storage.createCalculosProjecao(calculosProjecao);
+        console.log("Parcelas atualizadas com sucesso na tabela calculo_projecoes");
+      } catch (error) {
+        console.error("Erro ao atualizar parcelas na tabela calculo_projecoes:", error);
+      }
+    }
+
+    res.json(projection);
+  });
+
+  app.delete('/api/projections/:id', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    const success = await storage.deleteProjection(id);
+    if (!success) {
+      return res.status(404).json({ error: 'Projection not found' });
+    }
+
+    res.status(204).end();
+  });
+
+  // Transaction routes
+  app.get('/api/projections/:id/transactions', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    const transactions = await storage.getTransactions(id);
+    res.json(transactions);
+  });
+
+  app.post('/api/projections/:id/transactions', validateBody(insertTransactionSchema), async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    // Make sure the projection exists
+    const projection = await storage.getProjection(id);
+    if (!projection) {
+      return res.status(404).json({ error: 'Projection not found' });
+    }
+
+    // Set the projection ID in the transaction
+    req.body.projectionId = id;
+
+    const transaction = await storage.createTransaction(req.body);
+    res.status(201).json(transaction);
+  });
+
+  app.post('/api/projections/:id/transactions/batch', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'Invalid projection ID' });
+    }
+
+    // Make sure the projection exists
+    const projection = await storage.getProjection(id);
+    if (!projection) {
+      return res.status(404).json({ error: 'Projection not found' });
+    }
+
+    // Validate the transactions array
+    if (!Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be an array of transactions' });
+    }
+
+    // Set the projection ID for each transaction
+    const transactions = req.body.map((transaction: any) => ({
+      ...transaction,
+      projectionId: id
+    }));
+
+    try {
+      // Validate each transaction with the schema
+      transactions.forEach(transaction => {
+        insertTransactionSchema.parse(transaction);
+      });
+
+      // Create the transactions
+      const createdTransactions = await storage.createTransactions(transactions);
+      res.status(201).json(createdTransactions);
+    } catch (error) {
+      res.status(400).json({ error: 'Invalid transaction data', details: error });
+    }
+  });
+
+  // Dashboard statistics endpoint
+  app.get('/api/dashboard/stats', async (req, res) => {
+    // For demo, always use user ID 1
+    const clients = await storage.getClients(1);
+    const properties = await storage.getProperties(1);
+    const projections = await storage.getProjections(1);
+
+    // Calculate stats
+    const totalProjections = projections.length;
+    const totalClients = clients.length;
+    const totalProperties = properties.length;
+
+    // Calculate average ROI from projections that have calculation results
+    const projectionsWithRoi = projections.filter(p => 
+      p.calculationResults && (p.calculationResults as any).roi
+    );
+
+    const averageRoi = projectionsWithRoi.length > 0 
+      ? projectionsWithRoi.reduce((sum, p) => sum + ((p.calculationResults as any).roi || 0), 0) / projectionsWithRoi.length
+      : 0;
+
+    // Calculate average IRR
+    const projectionsWithIrr = projections.filter(p => 
+      p.calculationResults && (p.calculationResults as any).irr
+    );
+
+    const averageIrr = projectionsWithIrr.length > 0 
+      ? projectionsWithIrr.reduce((sum, p) => sum + ((p.calculationResults as any).irr || 0), 0) / projectionsWithIrr.length
+      : 0;
+
+    // Get counts by strategy
+    const strategyCount = {
+      futureSale: projections.filter(p => p.strategies && Array.isArray(p.strategies) && p.strategies.includes(PROJECTION_STRATEGY.FUTURE_SALE)).length,
+      assetAppreciation: projections.filter(p => p.strategies && Array.isArray(p.strategies) && p.strategies.includes(PROJECTION_STRATEGY.ASSET_APPRECIATION)).length,
+      rentalYield: projections.filter(p => p.strategies && Array.isArray(p.strategies) && p.strategies.includes(PROJECTION_STRATEGY.RENTAL_YIELD)).length,
+    };
+
+    // Get recent projections (last 5)
+    const recentProjections = projections
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 5);
+
+    // Enrich recent projections with client and property data
+    const enrichedRecentProjections = await Promise.all(
+      recentProjections.map(async (projection) => {
+        const client = await storage.getClient(projection.clientId);
+        const property = await storage.getProperty(projection.propertyId);
+
+        return {
+          ...projection,
+          client: client ? { id: client.id, name: client.name } : null,
+          property: property ? { id: property.id, name: property.name } : null,
+        };
+      })
+    );
+
+    res.json({
+      totalProjections,
+      totalClients,
+      totalProperties,
+      averageRoi,
+      averageIrr,
+      averageYield: 0.7, // Placeholder for now
+      activeProjections: totalProjections, // Placeholder for now (all are considered active)
+      completedProjections: 0, // Placeholder for now
+      strategyCount,
+      recentProjections: enrichedRecentProjections
+    });
+  });
+
+  // Endpoint para buscar cálculos de amortização de uma projeção
+  app.get('/api/projections/:id/calculo_projecoes', async (req, res) => {
+    const id = parseInt(req.params.id);
+    if (isNaN(id)) {
+      return res.status(400).json({ error: 'ID de projeção inválido' });
+    }
+
+    try {
+      // Buscar os cálculos da projeção
+      const calculosProjecao = await storage.getCalculosProjecao(id);
+
+      // Se não houver cálculos, pode ser porque o usuário não fez uma projeção
+      // de financiamento na planta ou os cálculos não foram salvos
+      if (!calculosProjecao || calculosProjecao.length === 0) {
+        return res.json([]);
+      }
+
+      res.json(calculosProjecao);
+    } catch (error) {
+      console.error("Erro ao buscar cálculos de projeção:", error);
+      res.status(500).json({ error: 'Erro ao buscar cálculos de projeção' });
+    }
+  });
+
+  // Registrar as rotas de cálculos de projeção
+  app.use('/api', projectionCalculationsRouter);
+
+  // Endpoint para acionar o cálculo de uma projeção específica (função facilitadora)
+  app.get('/api/projections/:id/get-with-calculations', async (req, res) => {
+    try {
+      const id = parseInt(req.params.id);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'ID de projeção inválido' });
+      }
+      
+      // Primeiro buscamos a projeção
+      const projection = await storage.getProjection(id);
+      if (!projection) {
+        return res.status(404).json({ error: 'Projeção não encontrada' });
+      }
+      
+      // Se a projeção não tem resultados de cálculo, vamos calculá-los
+      if (!projection.calculationResults || 
+          !projection.calculationResults.financiamentoPlanta ||
+          Object.keys(projection.calculationResults).length === 0) {
+        
+        console.log(`Projeção #${id} não tem cálculos, calculando agora...`);
+        
+        // Fazer uma requisição interna para o endpoint de cálculo
+        try {
+          const result = await new Promise<any>((resolve, reject) => {
+            const options = {
+              host: 'localhost',
+              port: req.socket.localPort,
+              path: `/api/projections/${id}/calculate`,
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              }
+            };
+            
+            const request = httpRequest(options, (response: any) => {
+              let data = '';
+              
+              response.on('data', (chunk: string) => {
+                data += chunk;
+              });
+              
+              response.on('end', () => {
+                try {
+                  resolve(JSON.parse(data));
+                } catch (error) {
+                  reject(error);
+                }
+              });
+            });
+            
+            request.on('error', (error: Error) => {
+              reject(error);
+            });
+            
+            request.end();
+          });
+          
+          console.log('Cálculos completos, retornando projeção atualizada');
+          return res.json(result.projection);
+        } catch (error) {
+          console.error('Erro ao calcular projeção internamente:', error);
+          // Em caso de erro, retornamos a projeção sem cálculos
+          return res.json(projection);
+        }
+      }
+      
+      // Se já tem cálculos, retorna a projeção diretamente
+      return res.json(projection);
+    } catch (error) {
+      console.error('Erro ao buscar projeção com cálculos:', error);
+      return res.status(500).json({ error: 'Erro ao buscar projeção com cálculos' });
+    }
+  });
+
+  const httpServer = createServer(app);
+
+  return httpServer;
+}

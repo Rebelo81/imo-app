@@ -1,0 +1,2108 @@
+import { useState, useRef } from "react";
+import { useRoute, useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
+import { useReactToPrint } from "react-to-print";
+import {
+  CartesianGrid,
+  Line,
+  LineChart as RechartsLineChart,
+  Pie,
+  PieChart as RechartsPieChart,
+  ResponsiveContainer,
+  Tooltip as ChartTooltip,
+  XAxis,
+  YAxis,
+  BarChart as RechartsBarChart,
+  Bar,
+  Legend,
+  Cell,
+  AreaChart,
+  Area
+} from "recharts";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle, CardFooter } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { 
+  ArrowLeft, 
+  Download, 
+  Share2, 
+  Printer, 
+  ChevronDown, 
+  Edit, 
+  ArrowUpRight, 
+  TrendingUp, 
+  Home, 
+  Calendar, 
+  DollarSign,
+  BarChart as BarChartIcon, 
+  PieChart as PieChartIcon,
+  LineChart as LineChartIcon,
+  Building,
+  Landmark,
+  ArrowRight,
+  Clock,
+  MoveLeft,
+  MoveRight,
+  BarChart3,
+  ArrowUpDown,
+  FileSpreadsheet,
+  Filter,
+  Eye,
+  EyeOff,
+  Key,
+  PencilIcon,
+  Trash2,
+  Calculator,
+  Save,
+  ChevronRight,
+  PercentIcon,
+  CreditCard,
+  Repeat,
+  CheckCircle2,
+  PlusCircle
+} from "lucide-react";
+import { 
+  DropdownMenu, 
+  DropdownMenuContent, 
+  DropdownMenuItem, 
+  DropdownMenuTrigger 
+} from "@/components/ui/dropdown-menu";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { formatCurrency, formatPercentage, formatDate } from "@/lib/utils";
+import { PROJECTION_STRATEGY, type Projection } from "@shared/schema";
+import { Skeleton } from "@/components/ui/skeleton";
+import { apiRequest } from "@/lib/queryClient";
+
+// Estendendo o tipo Projection para incluir os campos necessários para o financiamento na planta
+interface ExtendedProjection extends Projection {
+  listPrice?: number;
+  downPayment?: string;
+  monthlyCorrection?: string;
+  deliveryMonths?: number;
+  paymentMonths?: number;
+  title?: string;
+  createdAt?: string | Date;
+  strategies?: string[];
+  client?: {
+    name?: string;
+  };
+  property?: {
+    name?: string;
+    address?: string;
+    neighborhood?: string;
+    city?: string;
+  };
+  calculationResults?: {
+    futureSale?: {
+      purchasePrice?: number;
+      totalInvestment?: number;
+      futureValue?: number;
+      saleExpenses?: number;
+      grossProfit?: number;
+      incomeTax?: number;
+      netProfit?: number;
+      roi?: number;
+      irr?: number;
+      paybackMonths?: number;
+    };
+    assetAppreciation?: {
+      initialValue?: number;
+      totalMaintenance?: number;
+      finalValue?: number;
+      appreciationPercentage?: number;
+    };
+    rentalYield?: {
+      initialInvestment?: number;
+      furnishingCosts?: number;
+      totalReturnPercentage?: number;
+    };
+    futureSaleCashFlow?: Array<{
+      month: number;
+      description: string;
+      amount: number;
+    }>;
+    assetAppreciationYearly?: Array<{
+      year: number;
+      propertyValue?: number;
+      appreciation?: number;
+      netValue?: number;
+    }>;
+    rentalYieldYearly?: Array<{
+      year: number;
+      rentalIncome?: number;
+      expenses?: number;
+      netIncome?: number;
+      yieldRate?: number;
+    }>;
+  };
+}
+
+// Definindo o tipo para os cenários
+type Scenario = 'conservative' | 'realistic' | 'optimistic';
+
+export default function ReportProjection() {
+  const [, navigate] = useLocation();
+  const [, params] = useRoute<{ id: string }>("/projections/:id");
+  const id = params?.id ? parseInt(params.id) : 0;
+  
+  // Estado para controle dos cenários
+  const [selectedScenario, setSelectedScenario] = useState<Scenario>('realistic');
+
+  // Ref para impressão do relatório
+  const reportRef = useRef<HTMLDivElement>(null);
+  
+  // Handle de impressão
+  const handlePrint = () => {
+    if (reportRef.current) {
+      const printContent = reportRef.current;
+      const windowUrl = 'about:blank';
+      const uniqueName = new Date().getTime();
+      const windowName = `Print_${uniqueName}`;
+      const printWindow = window.open(windowUrl, windowName, 'left=0,top=0,width=800,height=900,toolbar=0,scrollbars=0,status=0');
+      
+      if (printWindow) {
+        printWindow.document.write(
+          `<html>
+            <head>
+              <title>ROImob - Relatório de Investimento</title>
+              <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .page-break { page-break-before: always; }
+                @media print {
+                  body { margin: 0; padding: 15mm; }
+                }
+              </style>
+            </head>
+            <body>
+              ${printContent.innerHTML}
+            </body>
+          </html>`
+        );
+        
+        printWindow.document.close();
+        printWindow.focus();
+        
+        // Imprimir após carregar
+        printWindow.onload = function() {
+          printWindow.print();
+          printWindow.close();
+        };
+      }
+    }
+  };
+  
+  // Verificar se estamos no modo preview
+  const [searchParams] = useRoute("/projections/:id");
+  const urlParams = new URLSearchParams(window.location.search);
+  const isPreviewMode = urlParams.get('mode') === 'preview';
+  const forcedPreview = localStorage.getItem('forcedPreviewRedirect') === 'true';
+  
+  // Limpar flag de redirecionamento forçado
+  if (forcedPreview) {
+    localStorage.removeItem('forcedPreviewRedirect');
+    console.log("Limpando flag de redirecionamento forçado");
+  }
+  
+  // Se estivermos no modo preview, podemos usar os dados armazenados localmente
+  const previewData = localStorage.getItem('lastProjection');
+  let previewProjection: Projection | null = null;
+  
+  // Verificar dados de preview
+  if ((isPreviewMode || forcedPreview) && previewData) {
+    try {
+      previewProjection = JSON.parse(previewData);
+      console.log("Usando dados do modo preview:", previewProjection);
+    } catch (e) {
+      console.error("Erro ao analisar dados de preview:", e);
+    }
+  }
+  
+  // Usar modo preview mesmo sem flag se temos dados cachados mas não temos na API
+  const usePreviewMode = (isPreviewMode || forcedPreview) && previewProjection !== null;
+  
+  // Fetch projection data se não estivermos no modo preview
+  const { data: projection, isLoading } = useQuery<ExtendedProjection>({
+    queryKey: ['/api/projections', id],
+    queryFn: async ({ queryKey }) => {
+      // Estratégia 1: Se estamos expressamente em modo preview e temos dados, use-os
+      if (usePreviewMode) {
+        console.log("Usando dados de preview por configuração");
+        return previewProjection;
+      }
+      
+      try {
+        // Estratégia 2: Tentar buscar da API
+        const response = await fetch(`${queryKey[0]}/${queryKey[1]}`, {
+          credentials: "include",
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Erro ao buscar projeção: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        return data;
+      } catch (error) {
+        // Estratégia 3: Se falhar e tivermos dados de preview, use-os como fallback
+        if (previewProjection) {
+          console.log("API falhou, usando dados de preview como fallback");
+          return previewProjection;
+        }
+        throw error;
+      }
+    },
+    enabled: !!id,
+    staleTime: 60000, // 1 minute
+    initialData: usePreviewMode ? previewProjection : undefined,
+    retry: 1 // Limitar tentativas de retry para ser mais rápido em caso de falha
+  });
+  
+  if (isLoading) {
+    return (
+      <div className="h-screen flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+  
+  if (!projection) {
+    return (
+      <div className="space-y-6">
+        <div className="flex items-center space-x-2">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            onClick={() => navigate("/projections")}
+            className="h-8 w-8 p-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="sr-only">Voltar</span>
+          </Button>
+          <h1 className="text-2xl font-bold">Projeção Não Encontrada</h1>
+        </div>
+        
+        <Card>
+          <CardContent className="flex flex-col items-center justify-center text-center py-16">
+            <h2 className="text-lg font-medium mb-2">Projeção não encontrada</h2>
+            <p className="text-slate-500 mb-4">
+              A projeção que você está procurando não existe ou foi removida.
+            </p>
+            <Button onClick={() => navigate("/projections")}>
+              Ver Todas as Projeções
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  
+  // Extrair informações principais
+  const clientName = projection.client?.name || "Cliente não especificado";
+  const propertyTitle = projection.property?.name || "Propriedade não especificada";
+  const propertyAddress = projection.property?.address 
+    ? `${projection.property.address}, ${projection.property.neighborhood || ''}, ${projection.property.city || ''}`
+    : "Endereço não especificado";
+  
+  // Determinar quais abas mostrar com base nas estratégias
+  const strategies = projection.strategies || [];
+  const hasRentalYield = Array.isArray(strategies) && strategies.includes(PROJECTION_STRATEGY.RENTAL_YIELD);
+  const hasFutureSale = Array.isArray(strategies) && strategies.includes(PROJECTION_STRATEGY.FUTURE_SALE);
+  const hasAppreciation = Array.isArray(strategies) && strategies.includes(PROJECTION_STRATEGY.ASSET_APPRECIATION);
+
+  // Aplicar multiplicadores de cenário
+  const scenarioMultipliers = {
+    conservative: 0.8,
+    realistic: 1.0,
+    optimistic: 1.2
+  };
+  
+  const multiplier = scenarioMultipliers[selectedScenario];
+  
+  // Função para ajustar valores conforme o cenário selecionado
+  const adjustValue = (value: number) => value * multiplier;
+
+  // Criar dados para gráficos
+  
+  // Fluxo de caixa acumulado (para venda futura)
+  const getCashFlowChartData = () => {
+    if (hasFutureSale && projection.calculationResults?.futureSaleCashFlow) {
+      // Agrupar por mês para simplificar a visualização
+      const cashFlowByMonth: Record<number, number> = {};
+      const cumulativeFlow: {month: number; value: number; cumulative: number}[] = [];
+      let cumulative = 0;
+      
+      projection.calculationResults.futureSaleCashFlow.forEach((item: any) => {
+        if (!cashFlowByMonth[item.month]) {
+          cashFlowByMonth[item.month] = 0;
+        }
+        cashFlowByMonth[item.month] += adjustValue(item.amount);
+      });
+      
+      // Converter para formato do gráfico
+      Object.keys(cashFlowByMonth).sort((a, b) => parseInt(a) - parseInt(b)).forEach(month => {
+        const monthNum = parseInt(month);
+        cumulative += cashFlowByMonth[monthNum];
+        cumulativeFlow.push({
+          month: monthNum,
+          value: cashFlowByMonth[monthNum],
+          cumulative: cumulative
+        });
+      });
+      
+      return cumulativeFlow;
+    }
+    return [];
+  };
+  
+  // Valorização do imóvel (para valorização de ativo)
+  const getAppreciationChartData = () => {
+    if (hasAppreciation && projection.calculationResults?.assetAppreciationYearly) {
+      return projection.calculationResults.assetAppreciationYearly.map((item: any) => ({
+        year: item.year,
+        propertyValue: adjustValue(item.propertyValue),
+        appreciation: adjustValue(item.appreciation),
+        netValue: adjustValue(item.netValue)
+      }));
+    }
+    return [];
+  };
+  
+  // Yield anual (para renda passiva)
+  const getRentalYieldChartData = () => {
+    if (hasRentalYield && projection.calculationResults?.rentalYieldYearly) {
+      return projection.calculationResults.rentalYieldYearly.map((item: any) => ({
+        year: item.year,
+        rentalIncome: adjustValue(item.rentalIncome),
+        expenses: adjustValue(item.expenses),
+        netIncome: adjustValue(item.netIncome),
+        yield: adjustValue(item.yieldRate)
+      }));
+    }
+    return [];
+  };
+  
+  // Dados para gráfico de pizza (distribuição de investimento)
+  const getInvestmentDistributionData = () => {
+    const data = [];
+    
+    if (hasFutureSale && projection.calculationResults?.futureSale) {
+      const downPayment = adjustValue(projection.calculationResults.futureSale.purchasePrice * parseFloat(projection.downPayment) / 100);
+      const installments = adjustValue(projection.calculationResults.futureSale.totalInvestment - downPayment);
+      
+      data.push(
+        { name: 'Entrada', value: downPayment },
+        { name: 'Parcelas', value: installments }
+      );
+    } else if (hasAppreciation && projection.calculationResults?.assetAppreciation) {
+      data.push(
+        { name: 'Valor Inicial', value: adjustValue(projection.calculationResults.assetAppreciation.initialValue) },
+        { name: 'Manutenção', value: adjustValue(projection.calculationResults.assetAppreciation.totalMaintenance) }
+      );
+    } else if (hasRentalYield && projection.calculationResults?.rentalYield) {
+      data.push(
+        { name: 'Imóvel', value: adjustValue(projection.calculationResults.rentalYield.initialInvestment - (projection.calculationResults.rentalYield.furnishingCosts || 0)) },
+        { name: 'Mobília', value: adjustValue(projection.calculationResults.rentalYield.furnishingCosts || 0) }
+      );
+    }
+    
+    return data;
+  };
+  
+  // Dados para gráfico de ROI por estratégia
+  const getROIComparisonData = () => {
+    const data = [];
+    
+    if (hasFutureSale && projection.calculationResults?.futureSale) {
+      data.push({
+        name: 'Venda Futura',
+        roi: adjustValue(projection.calculationResults.futureSale.roi)
+      });
+    }
+    
+    if (hasAppreciation && projection.calculationResults?.assetAppreciation) {
+      data.push({
+        name: 'Valorização',
+        roi: adjustValue(projection.calculationResults.assetAppreciation.appreciationPercentage)
+      });
+    }
+    
+    if (hasRentalYield && projection.calculationResults?.rentalYield) {
+      data.push({
+        name: 'Renda Passiva',
+        roi: adjustValue(projection.calculationResults.rentalYield.totalReturnPercentage)
+      });
+    }
+    
+    return data;
+  };
+  
+  // Cores para os gráficos
+  const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884d8'];
+  
+  // Crie os dados para fluxo de caixa anual (todos os anos agrupados)
+  const getYearlyCashFlowData = () => {
+    if (hasFutureSale && projection.calculationResults?.futureSaleCashFlow) {
+      const yearlyData: Record<number, {year: number; income: number; expenses: number; net: number}> = {};
+      
+      projection.calculationResults.futureSaleCashFlow.forEach((item: any) => {
+        // Converta mês para ano (assumindo que mês 0-11 é ano 1, 12-23 é ano 2, etc.)
+        const year = Math.floor(item.month / 12) + 1;
+        
+        if (!yearlyData[year]) {
+          yearlyData[year] = { year, income: 0, expenses: 0, net: 0 };
+        }
+        
+        if (item.amount > 0) {
+          yearlyData[year].income += adjustValue(item.amount);
+        } else {
+          yearlyData[year].expenses += adjustValue(-item.amount);
+        }
+        
+        yearlyData[year].net += adjustValue(item.amount);
+      });
+      
+      return Object.values(yearlyData);
+    }
+    
+    return [];
+  };
+  
+  return (
+    <div className="space-y-6">
+      {/* Header com botões de ação */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="flex items-center space-x-2">
+          <Button 
+            variant="ghost" 
+            size="sm" 
+            onClick={() => navigate("/projections")}
+            className="h-8 w-8 p-0"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            <span className="sr-only">Voltar</span>
+          </Button>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold">{projection.title}</h1>
+              <Badge variant="outline" className="ml-2 text-xs">
+                ROImob Report
+              </Badge>
+            </div>
+            <p className="text-slate-500">Cliente: {clientName}</p>
+          </div>
+        </div>
+        
+        <div className="flex flex-wrap gap-2">
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => navigate(`/projections/edit/${id}`)}
+          >
+            <Edit className="h-4 w-4 mr-2" />
+            Editar
+          </Button>
+          <Button variant="outline" size="sm" onClick={handlePrint}>
+            <Printer className="h-4 w-4 mr-2" />
+            Imprimir
+          </Button>
+          <Button variant="outline" size="sm">
+            <Download className="h-4 w-4 mr-2" />
+            Exportar PDF
+          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" size="sm">
+                <Share2 className="h-4 w-4 mr-2" />
+                Compartilhar
+                <ChevronDown className="h-4 w-4 ml-2" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              <DropdownMenuItem>Enviar por Email</DropdownMenuItem>
+              <DropdownMenuItem>Gerar Link</DropdownMenuItem>
+              <DropdownMenuItem>WhatsApp</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+      
+      {/* Corpo do relatório */}
+      <div ref={reportRef} className="space-y-8 bg-white p-8 rounded-lg border">
+        {/* Cabeçalho do relatório com logo e título */}
+        <div className="flex justify-between items-center border-b pb-6">
+          <div>
+            <h2 className="text-3xl font-bold">Análise de Investimento</h2>
+            <p className="text-slate-500 text-sm">Criado em {formatDate(projection.createdAt)}</p>
+          </div>
+          <div className="text-right">
+            <h3 className="text-xl font-semibold text-primary">ROImob</h3>
+            <p className="text-xs text-slate-500">Plataforma de Análise de Investimentos Imobiliários</p>
+          </div>
+        </div>
+        
+        {/* Seleção de cenários */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-4">
+          <h3 className="text-xl font-semibold">Cenários de Investimento</h3>
+          
+          <div className="flex rounded-lg overflow-hidden border">
+            <Button
+              variant={selectedScenario === 'conservative' ? 'default' : 'outline'}
+              className={`rounded-none ${selectedScenario === 'conservative' ? '' : 'bg-transparent hover:bg-slate-50'}`}
+              onClick={() => setSelectedScenario('conservative')}
+            >
+              Conservador
+            </Button>
+            <Button
+              variant={selectedScenario === 'realistic' ? 'default' : 'outline'}
+              className={`rounded-none ${selectedScenario === 'realistic' ? '' : 'bg-transparent hover:bg-slate-50'}`}
+              onClick={() => setSelectedScenario('realistic')}
+            >
+              Realista
+            </Button>
+            <Button
+              variant={selectedScenario === 'optimistic' ? 'default' : 'outline'}
+              className={`rounded-none ${selectedScenario === 'optimistic' ? '' : 'bg-transparent hover:bg-slate-50'}`}
+              onClick={() => setSelectedScenario('optimistic')}
+            >
+              Otimista
+            </Button>
+          </div>
+        </div>
+        
+        {/* Cards de visão geral */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <Card className="shadow-sm border-l-4 border-l-primary">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <DollarSign className="h-4 w-4 mr-2 text-primary" />
+                ROI
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-baseline">
+                <span className="text-3xl font-bold">
+                  {formatPercentage(adjustValue(projection.calculationResults?.roi || 0))}
+                </span>
+                <TrendingUp className="h-4 w-4 ml-2 text-green-500" />
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Retorno sobre Investimento</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="shadow-sm border-l-4 border-l-amber-500">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <BarChartIcon className="h-4 w-4 mr-2 text-amber-500" />
+                TIR
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-baseline">
+                <span className="text-3xl font-bold">
+                  {formatPercentage(adjustValue(projection.calculationResults?.irr || 0))}
+                </span>
+                <TrendingUp className="h-4 w-4 ml-2 text-green-500" />
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Taxa Interna de Retorno</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="shadow-sm border-l-4 border-l-green-500">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <Clock className="h-4 w-4 mr-2 text-green-500" />
+                Payback
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-baseline">
+                <span className="text-3xl font-bold">
+                  {Math.round(adjustValue(projection.calculationResults?.paybackMonths || 0))}
+                </span>
+                <span className="ml-1 text-lg">meses</span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Tempo de Recuperação</p>
+            </CardContent>
+          </Card>
+          
+          <Card className="shadow-sm border-l-4 border-l-indigo-500">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <Landmark className="h-4 w-4 mr-2 text-indigo-500" />
+                Lucro Estimado
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="flex items-baseline">
+                <span className="text-3xl font-bold text-green-600">
+                  {formatCurrency(adjustValue(projection.calculationResults?.netProfit || 0))}
+                </span>
+              </div>
+              <p className="text-xs text-slate-500 mt-1">Ganho Líquido Total</p>
+            </CardContent>
+          </Card>
+        </div>
+        
+        {/* Dados da Compra */}
+        <Card className="shadow-sm">
+          <CardHeader className="pb-4">
+            <CardTitle className="flex items-center">
+              <BarChart3 className="h-5 w-5 mr-2 text-primary" />
+              Dados da Compra
+            </CardTitle>
+            <CardDescription>
+              Análise do financiamento na planta
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-8">
+            {/* Resumo Financeiro */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Informações Básicas */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2">
+                  <Home className="h-4 w-4 text-[#434BE6]" />
+                  Informações Gerais
+                </h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Valor do Imóvel:</span>
+                    <span className="font-medium">{formatCurrency(parseFloat(projection.listPrice) || 0)}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Valor de Entrada:</span>
+                    <span className="font-medium">{formatCurrency(parseFloat(projection.downPayment) || 0)}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Valor Financiado:</span>
+                    <span className="font-medium">{formatCurrency((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0))}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Correção Mensal:</span>
+                    <span className="font-medium">{projection.monthlyCorrection || 0}% a.m.</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Prazo de Entrega:</span>
+                    <span className="font-medium">{projection.deliveryMonths || 0} meses</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Prazo de Pagamento:</span>
+                    <span className="font-medium">{projection.paymentMonths || 0} meses</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Totais */}
+              <div className="space-y-4">
+                <h3 className="text-lg font-semibold flex items-center gap-2">
+                  <ArrowUpDown className="h-4 w-4 text-[#434BE6]" />
+                  Totais do Financiamento
+                </h3>
+                <div className="space-y-2">
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Valor Total Pago:</span>
+                    <span className="font-medium">{formatCurrency((parseFloat(projection.listPrice) || 0) * 1.1)}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Total de Correção:</span>
+                    <span className="font-medium">{formatCurrency((parseFloat(projection.listPrice) || 0) * 0.1)}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Percentual de Correção:</span>
+                    <span className="font-medium">{formatPercentage(10)}</span>
+                  </div>
+                  <div className="flex justify-between border-b pb-1">
+                    <span className="text-muted-foreground">Valor Médio das Parcelas:</span>
+                    <span className="font-medium">
+                      {formatCurrency(((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / (projection.paymentMonths || 1))}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Gráfico de Fluxo de Pagamentos */}
+            <Card className="shadow-sm">
+              <CardHeader className="pb-2">
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <LineChartIcon className="h-4 w-4 text-[#434BE6]" />
+                  Fluxo de Pagamentos
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <RechartsLineChart
+                      data={[
+                        { mes: 1, valorCorrigido: parseFloat(projection.downPayment) || 0, saldoDevedor: parseFloat(projection.listPrice) || 0 },
+                        { mes: 6, valorCorrigido: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / 6, saldoDevedor: (parseFloat(projection.listPrice) || 0) * 0.8 },
+                        { mes: 12, valorCorrigido: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / 6, saldoDevedor: (parseFloat(projection.listPrice) || 0) * 0.6 },
+                        { mes: 18, valorCorrigido: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / 6, saldoDevedor: (parseFloat(projection.listPrice) || 0) * 0.4 },
+                        { mes: 24, valorCorrigido: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / 6, saldoDevedor: (parseFloat(projection.listPrice) || 0) * 0.2 },
+                        { mes: projection.paymentMonths || 30, valorCorrigido: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / 6, saldoDevedor: 0 }
+                      ]}
+                      margin={{ top: 5, right: 5, left: 5, bottom: 5 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" opacity={0.2} />
+                      <XAxis 
+                        dataKey="mes" 
+                        label={{ value: 'Mês', position: 'bottom', dy: 15 }}
+                        tick={{ fontSize: 12 }}
+                      />
+                      <YAxis 
+                        tickFormatter={(value) => `R$${(value/1000).toFixed(0)}k`}
+                        tick={{ fontSize: 11 }}
+                      />
+                      <Tooltip 
+                        formatter={(value: number) => [formatCurrency(value), 'Valor']}
+                        labelFormatter={(label: string) => `Mês ${label}`}
+                      />
+                      <Legend />
+                      <Line
+                        type="monotone"
+                        dataKey="valorCorrigido"
+                        name="Valor Pago"
+                        stroke="#434BE6"
+                        strokeWidth={2}
+                        dot={{ r: 3 }}
+                        activeDot={{ r: 6 }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="saldoDevedor"
+                        name="Saldo Devedor"
+                        stroke="#6B7280"
+                        strokeWidth={1.5}
+                        dot={false}
+                      />
+                    </RechartsLineChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+            
+            {/* Gráficos de Distribuição */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-6">
+              {/* Distribuição dos Pagamentos */}
+              <Card className="border shadow-sm bg-white overflow-hidden h-full">
+                <CardHeader className="pb-0">
+                  <CardTitle className="text-base flex items-center gap-2 text-center justify-center text-[#434BE6]">
+                    <PieChart className="h-4 w-4 text-[#434BE6]" />
+                    Distribuição dos Pagamentos
+                  </CardTitle>
+                  <CardDescription className="text-center text-sm">
+                    Valores por tipo de pagamento
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="h-[280px] flex items-center justify-center">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RechartsPieChart>
+                        <Pie
+                          data={[
+                            { name: 'Entrada', value: parseFloat(projection.downPayment) || 0 },
+                            { name: 'Parcelas', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.7 },
+                            { name: 'Reforços', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.2 },
+                            { name: 'Chaves', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.1 }
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          labelLine={true}
+                          outerRadius={100}
+                          fill="#8884d8"
+                          dataKey="value"
+                          nameKey="name"
+                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                        >
+                          {[
+                            { name: 'Entrada', value: parseFloat(projection.downPayment) || 0 },
+                            { name: 'Parcelas', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.7 },
+                            { name: 'Reforços', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.2 },
+                            { name: 'Chaves', value: ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) * 0.1 }
+                          ].map((entry, index) => (
+                            <Cell 
+                              key={`cell-${index}`} 
+                              fill={['#4a6cf7', '#0e9f6e', '#ff5a1f', '#8b5cf6'][index]} 
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => formatCurrency(value as number)} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Composição do Financiamento */}
+              <Card className="border shadow-sm bg-white overflow-hidden h-full">
+                <CardHeader className="pb-0">
+                  <CardTitle className="text-base flex items-center gap-2 text-center justify-center text-[#434BE6]">
+                    <PieChart className="h-4 w-4 text-[#434BE6]" />
+                    Composição do Financiamento
+                  </CardTitle>
+                  <CardDescription className="text-center text-sm">
+                    Distribuição dos valores no financiamento
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-4">
+                  <div className="h-[280px] flex items-center justify-center">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RechartsPieChart>
+                        <Pie
+                          data={[
+                            { name: 'Valor Base', value: parseFloat(projection.listPrice) || 0 },
+                            { name: 'Correção', value: (parseFloat(projection.listPrice) || 0) * 0.1 }
+                          ]}
+                          cx="50%"
+                          cy="50%"
+                          labelLine={true}
+                          outerRadius={100}
+                          fill="#8884d8"
+                          dataKey="value"
+                          nameKey="name"
+                          label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                        >
+                          {[
+                            { name: 'Valor Base', value: parseFloat(projection.listPrice) || 0 },
+                            { name: 'Correção', value: (parseFloat(projection.listPrice) || 0) * 0.1 }
+                          ].map((entry, index) => (
+                            <Cell 
+                              key={`cell-${index}`} 
+                              fill={['#3b82f6', '#f97316'][index]} 
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip formatter={(value) => formatCurrency(value as number)} />
+                        <Legend />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+            
+            {/* Tabela de Amortização */}
+            <div className="mt-6">
+              <h3 className="text-lg font-semibold mb-4 flex items-center gap-2 text-[#434BE6]">
+                <FileSpreadsheet className="h-4 w-4 text-[#434BE6]" />
+                Tabela de Amortização
+              </h3>
+              
+              <div className="overflow-auto">
+                <table className="w-full border-collapse min-w-[800px]">
+                  <thead className="bg-slate-50">
+                    <tr>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Mês</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Data</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Tipo</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Valor Base</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Correção</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Valor Corrigido</th>
+                      <th className="border p-2 text-left text-sm font-semibold text-slate-700">Saldo Devedor</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: Math.min(10, projection.paymentMonths || 30) }).map((_, index) => {
+                      const mes = index;
+                      const dataBase = new Date();
+                      dataBase.setMonth(dataBase.getMonth() + mes);
+                      const dataFormatada = dataBase.toLocaleDateString('pt-BR', {
+                        year: 'numeric',
+                        month: '2-digit',
+                        day: '2-digit'
+                      });
+                      
+                      const valorBase = mes === 0 
+                        ? parseFloat(projection.downPayment) || 0
+                        : ((parseFloat(projection.listPrice) || 0) - (parseFloat(projection.downPayment) || 0)) / (projection.paymentMonths || 30);
+                      
+                      const correcao = mes === 0 ? 0 : valorBase * (parseFloat(projection.monthlyCorrection) || 0) / 100 * mes;
+                      const valorCorrigido = valorBase + correcao;
+                      const saldoInicialDevedor = parseFloat(projection.listPrice) || 0;
+                      const saldoDevedor = saldoInicialDevedor - (valorBase * (mes + 1));
+                      
+                      const tipo = mes === 0 
+                        ? 'Entrada' 
+                        : mes === (projection.paymentMonths || 30) - 1 
+                          ? 'Chaves' 
+                          : mes % 3 === 0 
+                            ? 'Reforço' 
+                            : 'Parcela';
+                      
+                      return (
+                        <tr key={mes} className={mes % 2 === 0 ? 'bg-slate-50' : 'bg-white'}>
+                          <td className="border p-2 text-sm">{mes + 1}</td>
+                          <td className="border p-2 text-sm">{dataFormatada}</td>
+                          <td className="border p-2 text-sm">
+                            <span className={`px-2 py-1 rounded-full text-xs
+                              ${tipo === 'Entrada' 
+                                ? 'bg-blue-100 text-blue-800' 
+                                : tipo === 'Reforço' 
+                                  ? 'bg-orange-100 text-orange-800' 
+                                  : tipo === 'Chaves' 
+                                    ? 'bg-purple-100 text-purple-800' 
+                                    : 'bg-green-100 text-green-800'
+                              }`}>
+                              {tipo}
+                            </span>
+                          </td>
+                          <td className="border p-2 text-sm">{formatCurrency(valorBase)}</td>
+                          <td className="border p-2 text-sm">{formatCurrency(correcao)}</td>
+                          <td className="border p-2 text-sm">{formatCurrency(valorCorrigido)}</td>
+                          <td className="border p-2 text-sm">{formatCurrency(Math.max(0, saldoDevedor))}</td>
+                        </tr>
+                      );
+                    })}
+                    {projection.paymentMonths && projection.paymentMonths > 10 && (
+                      <tr>
+                        <td colSpan={7} className="border p-2 text-center text-sm text-slate-500">
+                          ... e mais {projection.paymentMonths - 10} parcelas
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                  <tfoot className="bg-slate-100">
+                    <tr>
+                      <td colSpan={3} className="border p-2 text-sm font-semibold">Total</td>
+                      <td className="border p-2 text-sm font-semibold">{formatCurrency(parseFloat(projection.listPrice) || 0)}</td>
+                      <td className="border p-2 text-sm font-semibold">{formatCurrency((parseFloat(projection.listPrice) || 0) * 0.1)}</td>
+                      <td className="border p-2 text-sm font-semibold">{formatCurrency((parseFloat(projection.listPrice) || 0) * 1.1)}</td>
+                      <td className="border p-2 text-sm font-semibold">R$ 0,00</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        
+        {/* Detalhes do imóvel */}
+        <Card className="shadow-sm">
+          <CardHeader className="pb-4">
+            <CardTitle className="flex items-center">
+              <Building className="h-5 w-5 mr-2 text-primary" />
+              Detalhes do Imóvel
+            </CardTitle>
+            <CardDescription>
+              Informações sobre a propriedade analisada
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-6">
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium text-slate-500">Título</h4>
+                <p className="font-semibold">{propertyTitle}</p>
+              </div>
+              
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium text-slate-500">Preço</h4>
+                <p className="font-semibold">{formatCurrency(projection.listPrice || 0)}</p>
+              </div>
+              
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium text-slate-500">Área</h4>
+                <p className="font-semibold">{projection.property?.area || 0} m²</p>
+              </div>
+              
+              <div className="space-y-1 sm:col-span-2">
+                <h4 className="text-sm font-medium text-slate-500">Endereço</h4>
+                <p className="font-semibold">{propertyAddress}</p>
+              </div>
+              
+              <div className="space-y-1">
+                <h4 className="text-sm font-medium text-slate-500">Tipo</h4>
+                <p className="font-semibold capitalize">
+                  {projection.property?.type === "residential" && "Residencial"}
+                  {projection.property?.type === "commercial" && "Comercial"}
+                  {projection.property?.type === "land" && "Terreno"}
+                  {!projection.property?.type && "Não especificado"}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        
+        {/* Gráficos de visão geral */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {/* Gráfico de comparação de ROI entre estratégias */}
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <BarChartIcon className="h-4 w-4 mr-2 text-primary" />
+                Comparação de ROI entre Estratégias
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="h-80">
+              {getROIComparisonData().length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={getROIComparisonData()}
+                    margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis 
+                      tickFormatter={(value) => `${value}%`}
+                      domain={[0, 'dataMax + 10']}
+                    />
+                    <Tooltip 
+                      formatter={(value) => [`${value.toFixed(2)}%`, 'ROI']}
+                      labelFormatter={(label) => `Estratégia: ${label}`}
+                    />
+                    <Legend />
+                    <Bar dataKey="roi" name="ROI (%)">
+                      {getROIComparisonData().map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center">
+                  <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+          
+          {/* Gráfico de distribuição do investimento */}
+          <Card className="shadow-sm">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-base flex items-center">
+                <PieChartIcon className="h-4 w-4 mr-2 text-primary" />
+                Distribuição do Investimento
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="h-80">
+              {getInvestmentDistributionData().length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%">
+                  <RechartsPieChart>
+                    <Pie
+                      data={getInvestmentDistributionData()}
+                      cx="50%"
+                      cy="50%"
+                      labelLine={true}
+                      outerRadius={100}
+                      fill="#8884d8"
+                      dataKey="value"
+                      nameKey="name"
+                      label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                    >
+                      {getInvestmentDistributionData().map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Tooltip formatter={(value) => formatCurrency(value)} />
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              ) : (
+                <div className="h-full flex items-center justify-center">
+                  <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+        
+        {/* Fluxo de Caixa Anual */}
+        <Card className="shadow-sm">
+          <CardHeader>
+            <CardTitle className="flex items-center">
+              <LineChart className="h-5 w-5 mr-2 text-primary" />
+              Fluxo de Caixa Anual
+            </CardTitle>
+            <CardDescription>
+              Resumo do fluxo de caixa por ano
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="h-96">
+            {getYearlyCashFlowData().length > 0 ? (
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={getYearlyCashFlowData()}
+                  margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                >
+                  <CartesianGrid strokeDasharray="3 3" />
+                  <XAxis dataKey="year" label={{ value: 'Ano', position: 'insideBottom', offset: -5 }} />
+                  <YAxis 
+                    tickFormatter={(value) => formatCurrency(value).replace('R$', '')} 
+                    label={{ value: 'Valor (R$)', angle: -90, position: 'insideLeft' }}
+                  />
+                  <Tooltip 
+                    formatter={(value) => [formatCurrency(value), '']} 
+                    labelFormatter={(label) => `Ano ${label}`}
+                  />
+                  <Legend />
+                  <Bar dataKey="income" name="Receitas" fill="#4ade80" />
+                  <Bar dataKey="expenses" name="Despesas" fill="#f87171" />
+                  <Bar dataKey="net" name="Saldo" fill="#60a5fa" />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+        
+        {/* Abas para as diferentes estratégias */}
+        <div>
+          <h3 className="text-xl font-semibold mb-4">Análise por Estratégia</h3>
+          
+          <Tabs defaultValue={Array.isArray(projection.strategies) && projection.strategies.length > 0 ? projection.strategies[0] : ""} className="w-full">
+            <TabsList className="w-full mb-6 grid grid-cols-1 sm:grid-cols-3 h-auto">
+              {hasFutureSale && (
+                <TabsTrigger 
+                  value={PROJECTION_STRATEGY.FUTURE_SALE} 
+                  className="flex items-center py-3 data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                >
+                  <ArrowUpRight className="h-4 w-4 mr-2" />
+                  Venda Futura
+                </TabsTrigger>
+              )}
+              {hasRentalYield && (
+                <TabsTrigger 
+                  value={PROJECTION_STRATEGY.RENTAL_YIELD} 
+                  className="flex items-center py-3 data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                >
+                  <Landmark className="h-4 w-4 mr-2" />
+                  Renda Passiva
+                </TabsTrigger>
+              )}
+              {hasAppreciation && (
+                <TabsTrigger 
+                  value={PROJECTION_STRATEGY.ASSET_APPRECIATION} 
+                  className="flex items-center py-3 data-[state=active]:border-b-2 data-[state=active]:border-primary rounded-none"
+                >
+                  <TrendingUp className="h-4 w-4 mr-2" />
+                  Valorização
+                </TabsTrigger>
+              )}
+            </TabsList>
+            
+            {/* Conteúdo da aba de Venda Futura */}
+            {hasFutureSale && (
+              <TabsContent value={PROJECTION_STRATEGY.FUTURE_SALE} className="mt-6 space-y-6">
+                {/* Seção Dados da Compra */}
+                <Card className="shadow-sm">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-xl flex items-center gap-2">
+                      <Calculator className="h-5 w-5 text-[#434BE6]" />
+                      Dados da Compra
+                    </CardTitle>
+                    <CardDescription>
+                      Análise detalhada do financiamento na planta
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-8">
+                    {/* Resumo Financeiro */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      {/* Informações Básicas */}
+                      <div className="space-y-4">
+                        <h3 className="text-lg font-semibold flex items-center gap-2">
+                          <Home className="h-4 w-4 text-[#434BE6]" />
+                          Informações Gerais
+                        </h3>
+                        <div className="space-y-2">
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor do Imóvel:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice || 0)}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor de Entrada:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice * parseFloat(projection.downPayment) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor Financiado:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice - (projection.listPrice * parseFloat(projection.downPayment) / 100))}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Correção Mensal:</span>
+                            <span className="font-medium">{projection.monthlyCorrection}% a.m.</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Prazo de Entrega:</span>
+                            <span className="font-medium">{projection.deliveryMonths} meses</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Prazo de Pagamento:</span>
+                            <span className="font-medium">{projection.paymentMonths} meses</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Totais do Financiamento */}
+                      <div className="space-y-4">
+                        <h3 className="text-lg font-semibold flex items-center gap-2">
+                          <ArrowUpDown className="h-4 w-4 text-[#434BE6]" />
+                          Totais do Financiamento
+                        </h3>
+                        <div className="space-y-2">
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor Total do Investimento:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice || 0)}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor da Entrada:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice * parseFloat(projection.downPayment) / 100)}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Saldo a Financiar:</span>
+                            <span className="font-medium">{formatCurrency(projection.listPrice - (projection.listPrice * parseFloat(projection.downPayment) / 100))}</span>
+                          </div>
+                          <div className="flex justify-between border-b pb-1">
+                            <span className="text-muted-foreground">Valor Mensal Aproximado:</span>
+                            <span className="font-medium">{formatCurrency((projection.listPrice - (projection.listPrice * parseFloat(projection.downPayment) / 100)) / projection.paymentMonths)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Grid para os gráficos lado a lado */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-8 mb-8">
+                      {/* Gráfico de Distribuição de Pagamentos */}
+                      <Card className="border shadow-sm bg-white overflow-hidden h-full">
+                        <CardHeader className="pb-0">
+                          <CardTitle className="text-base flex items-center gap-2 text-center justify-center text-[#434BE6]">
+                            <BarChartIcon className="h-4 w-4 text-[#434BE6]" />
+                            Distribuição do Financiamento
+                          </CardTitle>
+                          <CardDescription className="text-center text-sm">
+                            Entrada vs. Saldo do Financiamento
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="p-4">
+                          <div className="h-[280px] flex items-center justify-center">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <RechartsPieChart>
+                                <Pie
+                                  data={[
+                                    { name: "Entrada", value: projection.listPrice * parseFloat(projection.downPayment) / 100 },
+                                    { name: "Financiado", value: projection.listPrice * (100 - parseFloat(projection.downPayment)) / 100 }
+                                  ]}
+                                  cx="50%"
+                                  cy="50%"
+                                  labelLine={true}
+                                  label={({ name, percent }) => `${(percent * 100).toFixed(1)}%`}
+                                  outerRadius={110}
+                                  innerRadius={45}
+                                  fill="#8884d8"
+                                  dataKey="value"
+                                  strokeWidth={2}
+                                  stroke="#fff"
+                                  paddingAngle={2}
+                                >
+                                  <Cell fill="rgba(67, 75, 230, 0.85)" /> {/* Entrada */}
+                                  <Cell fill="rgba(16, 185, 129, 0.75)" /> {/* Financiado */}
+                                </Pie>
+                                <ChartTooltip 
+                                  formatter={(value) => [formatCurrency(value), 'Valor']}
+                                  contentStyle={{ 
+                                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                                    border: '1px solid #d8dbff',
+                                    borderRadius: '8px',
+                                    boxShadow: '0 2px 10px rgba(67, 75, 230, 0.15)'
+                                  }}
+                                />
+                                <Legend 
+                                  layout="vertical" 
+                                  align="right"
+                                  verticalAlign="middle"
+                                  iconType="circle"
+                                  iconSize={10}
+                                  formatter={(value, entry, index) => {
+                                    const COLORS = [
+                                      'rgb(67, 75, 230)',   // Azul (entrada)
+                                      'rgb(16, 185, 129)'   // Verde (financiado)
+                                    ];
+                                    
+                                    return (
+                                      <span style={{ 
+                                        color: COLORS[index % COLORS.length], 
+                                        fontWeight: 500,
+                                        fontSize: '13px',
+                                        padding: '4px 0',
+                                        display: 'flex',
+                                        alignItems: 'center'
+                                      }}>
+                                        {value}
+                                      </span>
+                                    );
+                                  }}
+                                  wrapperStyle={{ 
+                                    paddingRight: '20px',
+                                    borderLeft: '1px dashed #d8dbff', 
+                                    paddingLeft: '15px'
+                                  }}
+                                />
+                              </RechartsPieChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Gráfico de Amortização */}
+                      <Card className="border shadow-sm bg-white overflow-hidden h-full">
+                        <CardHeader className="pb-0">
+                          <CardTitle className="text-base flex items-center gap-2 text-center justify-center text-[#434BE6]">
+                            <LineChartIcon className="h-4 w-4 text-[#434BE6]" />
+                            Projeção de Amortização
+                          </CardTitle>
+                          <CardDescription className="text-center text-sm">
+                            Evolução do saldo financiado
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="p-4">
+                          <div className="h-[280px] flex items-center justify-center">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <RechartsLineChart
+                                data={[...Array(projection.paymentMonths)].map((_, index) => {
+                                  const initialDebt = projection.listPrice * (100 - parseFloat(projection.downPayment)) / 100;
+                                  // Simulação simplificada de saldo devedor
+                                  const monthlyReduction = initialDebt / projection.paymentMonths;
+                                  return {
+                                    mes: index + 1,
+                                    saldoDevedor: initialDebt - (monthlyReduction * index),
+                                    valorParcela: monthlyReduction * (1 + (parseFloat(projection.monthlyCorrection || '0.5') / 100) * index)
+                                  };
+                                })}
+                                margin={{
+                                  top: 20,
+                                  right: 30,
+                                  left: 20,
+                                  bottom: 20,
+                                }}
+                              >
+                                <CartesianGrid strokeDasharray="3 3" stroke="#f5f5f5" />
+                                <XAxis 
+                                  dataKey="mes" 
+                                  label={{ value: 'Mês', position: 'insideBottomRight', offset: 0 }}
+                                  tick={{ fontSize: 12 }}
+                                />
+                                <YAxis 
+                                  tickFormatter={(value) => formatCurrency(value).replace('R$', '')}
+                                  tick={{ fontSize: 12 }}
+                                />
+                                <ChartTooltip 
+                                  formatter={(value) => [formatCurrency(value), 'Valor']}
+                                  contentStyle={{ 
+                                    backgroundColor: 'rgba(255, 255, 255, 0.95)', 
+                                    border: '1px solid #d8dbff',
+                                    borderRadius: '8px',
+                                    boxShadow: '0 2px 10px rgba(67, 75, 230, 0.15)'
+                                  }}
+                                />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="saldoDevedor" 
+                                  name="Saldo Devedor" 
+                                  stroke="#434BE6" 
+                                  strokeWidth={2} 
+                                  dot={false} 
+                                  activeDot={{ r: 6, fill: '#434BE6' }}
+                                />
+                                <Line 
+                                  type="monotone" 
+                                  dataKey="valorParcela" 
+                                  name="Valor da Parcela" 
+                                  stroke="#10B981" 
+                                  strokeWidth={2} 
+                                  dot={false}
+                                  activeDot={{ r: 6, fill: '#10B981' }}
+                                  strokeDasharray="5 5"
+                                />
+                              </RechartsLineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  </CardContent>
+                </Card>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Resumo Financeiro</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Preço de Compra:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.purchasePrice || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Investimento Total:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.totalInvestment || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Valor Futuro:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.futureValue || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Lucro Bruto:</span>
+                          <span className="font-semibold text-green-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.grossProfit || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Despesas de Venda:</span>
+                          <span className="font-semibold text-red-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.saleExpenses || 0))}
+                          </span>
+                        </div>
+                        <Separator />
+                        <div className="flex justify-between text-sm font-bold pt-2">
+                          <span>Lucro Líquido:</span>
+                          <span className="text-green-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.futureSale?.netProfit || 0))}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Fluxo de Caixa Acumulado</CardTitle>
+                      <CardDescription>
+                        Progresso do investimento ao longo do tempo
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="h-80">
+                      {getCashFlowChartData().length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart
+                            data={getCashFlowChartData()}
+                            margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="month" 
+                              label={{ value: 'Mês', position: 'insideBottom', offset: -5 }} 
+                            />
+                            <YAxis 
+                              tickFormatter={(value) => formatCurrency(value).replace('R$', '')} 
+                              label={{ value: 'Valor (R$)', angle: -90, position: 'insideLeft' }}
+                            />
+                            <Tooltip 
+                              formatter={(value) => [formatCurrency(value), '']} 
+                              labelFormatter={(label) => `Mês ${label}`}
+                            />
+                            <Legend />
+                            <Line 
+                              type="monotone" 
+                              dataKey="value" 
+                              name="Fluxo Mensal" 
+                              stroke="#8884d8" 
+                              activeDot={{ r: 8 }} 
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="cumulative" 
+                              name="Acumulado" 
+                              stroke="#82ca9d" 
+                              strokeWidth={2}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Indicadores de Performance</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-6">
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">ROI</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.futureSale?.roi || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.futureSale?.roi || 0)) / 2)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Retorno total sobre o investimento</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">TIR</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.futureSale?.irr || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.futureSale?.irr || 0)) / 2)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Taxa interna de retorno anualizada</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Payback</span>
+                            <span className="text-sm font-semibold">
+                              {Math.round(adjustValue(projection.calculationResults?.futureSale?.paybackMonths || 0))} meses
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ 
+                                width: `${Math.min(100, 100 - (adjustValue(projection.calculationResults?.futureSale?.paybackMonths || 0) / 60 * 100))}%` 
+                              }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Tempo para recuperar o investimento</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Fluxo de Caixa Detalhado</CardTitle>
+                    </CardHeader>
+                    <CardContent className="max-h-80 overflow-y-auto">
+                      <div className="divide-y">
+                        {projection.calculationResults?.futureSaleCashFlow && projection.calculationResults.futureSaleCashFlow.map((item: any, index: number) => (
+                          <div key={index} className="py-2 flex justify-between items-center">
+                            <div className="flex items-center">
+                              {item.amount > 0 ? (
+                                <ArrowUpRight className="h-4 w-4 mr-2 text-green-500" />
+                              ) : (
+                                <ArrowRight className="h-4 w-4 mr-2 text-red-500" />
+                              )}
+                              <div>
+                                <p className="text-sm font-medium">{item.description}</p>
+                                <p className="text-xs text-slate-500">Mês {item.month}</p>
+                              </div>
+                            </div>
+                            <span className={`text-sm font-semibold ${item.amount > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                              {formatCurrency(adjustValue(item.amount))}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+            )}
+            
+            {/* Conteúdo da aba de Renda Passiva */}
+            {hasRentalYield && (
+              <TabsContent value={PROJECTION_STRATEGY.RENTAL_YIELD} className="mt-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Resumo de Renda</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Investimento Inicial:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.rentalYield?.initialInvestment || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Renda Anual:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.rentalYield?.annualRentalIncome || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Despesas Anuais:</span>
+                          <span className="font-semibold text-red-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.rentalYield?.annualExpenses || 0))}
+                          </span>
+                        </div>
+                        <Separator />
+                        <div className="flex justify-between text-sm font-bold pt-2">
+                          <span>Renda Líquida Anual:</span>
+                          <span className="text-green-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.rentalYield?.annualNetIncome || 0))}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Evolução da Renda Anual</CardTitle>
+                      <CardDescription>
+                        Projeção de renda ao longo dos anos
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="h-80">
+                      {getRentalYieldChartData().length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart
+                            data={getRentalYieldChartData()}
+                            margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="year" 
+                              label={{ value: 'Ano', position: 'insideBottom', offset: -5 }} 
+                            />
+                            <YAxis 
+                              tickFormatter={(value) => formatCurrency(value).replace('R$', '')} 
+                              label={{ value: 'Valor (R$)', angle: -90, position: 'insideLeft' }}
+                            />
+                            <Tooltip 
+                              formatter={(value) => [formatCurrency(value), '']} 
+                              labelFormatter={(label) => `Ano ${label}`}
+                            />
+                            <Legend />
+                            <Area 
+                              type="monotone" 
+                              dataKey="rentalIncome" 
+                              name="Receita" 
+                              fillOpacity={0.3} 
+                              fill="#4ade80" 
+                              stroke="#4ade80" 
+                            />
+                            <Area 
+                              type="monotone" 
+                              dataKey="expenses" 
+                              name="Despesas" 
+                              fillOpacity={0.3} 
+                              fill="#f87171" 
+                              stroke="#f87171" 
+                            />
+                            <Area 
+                              type="monotone" 
+                              dataKey="netIncome" 
+                              name="Renda Líquida" 
+                              fillOpacity={0.5} 
+                              fill="#60a5fa" 
+                              stroke="#60a5fa" 
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Indicadores de Performance</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-6">
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Yield Inicial</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.rentalYield?.firstYearYield || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.rentalYield?.firstYearYield || 0)) * 10)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Rendimento do primeiro ano</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Yield Médio</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.rentalYield?.averageYield || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.rentalYield?.averageYield || 0)) * 10)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Rendimento médio no período</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Valorização do Imóvel</span>
+                            <span className="text-sm font-semibold">
+                              {formatCurrency(adjustValue(projection.calculationResults?.rentalYield?.propertyValueIncrease || 0))}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Ganho estimado com valorização</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Retorno Total</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.rentalYield?.totalReturnPercentage || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.rentalYield?.totalReturnPercentage || 0)) / 2)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Retorno total (renda + valorização)</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Yield Anual</CardTitle>
+                      <CardDescription>
+                        Taxa de rendimento ao longo dos anos
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="h-80">
+                      {getRentalYieldChartData().length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart
+                            data={getRentalYieldChartData()}
+                            margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="year" 
+                              label={{ value: 'Ano', position: 'insideBottom', offset: -5 }} 
+                            />
+                            <YAxis 
+                              tickFormatter={(value) => `${value.toFixed(2)}%`} 
+                              domain={[0, 'dataMax + 2']}
+                              label={{ value: 'Yield (%)', angle: -90, position: 'insideLeft' }}
+                            />
+                            <Tooltip 
+                              formatter={(value) => [`${value.toFixed(2)}%`, 'Yield']} 
+                              labelFormatter={(label) => `Ano ${label}`}
+                            />
+                            <Legend />
+                            <Line 
+                              type="monotone" 
+                              dataKey="yield" 
+                              name="Yield Anual" 
+                              stroke="#8884d8" 
+                              strokeWidth={2}
+                              activeDot={{ r: 8 }} 
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+            )}
+            
+            {/* Conteúdo da aba de Valorização */}
+            {hasAppreciation && (
+              <TabsContent value={PROJECTION_STRATEGY.ASSET_APPRECIATION} className="mt-6 space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Resumo da Valorização</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Valor Inicial:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.assetAppreciation?.initialValue || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Valor Final:</span>
+                          <span className="font-semibold">
+                            {formatCurrency(adjustValue(projection.calculationResults?.assetAppreciation?.finalValue || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Valorização Total:</span>
+                          <span className="font-semibold text-green-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.assetAppreciation?.totalAppreciation || 0))}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-500">Custos de Manutenção:</span>
+                          <span className="font-semibold text-red-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.assetAppreciation?.totalMaintenance || 0))}
+                          </span>
+                        </div>
+                        <Separator />
+                        <div className="flex justify-between text-sm font-bold pt-2">
+                          <span>Ganho Líquido:</span>
+                          <span className="text-green-600">
+                            {formatCurrency(adjustValue(projection.calculationResults?.assetAppreciation?.netGain || 0))}
+                          </span>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Evolução do Valor do Imóvel</CardTitle>
+                      <CardDescription>
+                        Crescimento ao longo dos anos
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="h-80">
+                      {getAppreciationChartData().length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart
+                            data={getAppreciationChartData()}
+                            margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+                          >
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis 
+                              dataKey="year" 
+                              label={{ value: 'Ano', position: 'insideBottom', offset: -5 }} 
+                            />
+                            <YAxis 
+                              tickFormatter={(value) => formatCurrency(value).replace('R$', '')} 
+                              label={{ value: 'Valor (R$)', angle: -90, position: 'insideLeft' }}
+                            />
+                            <Tooltip 
+                              formatter={(value) => [formatCurrency(value), '']} 
+                              labelFormatter={(label) => `Ano ${label}`}
+                            />
+                            <Legend />
+                            <Line 
+                              type="monotone" 
+                              dataKey="propertyValue" 
+                              name="Valor do Imóvel" 
+                              stroke="#8884d8" 
+                              strokeWidth={2}
+                              activeDot={{ r: 8 }} 
+                            />
+                            <Line 
+                              type="monotone" 
+                              dataKey="netValue" 
+                              name="Valor Líquido" 
+                              stroke="#82ca9d" 
+                              strokeWidth={2}
+                            />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="h-full flex items-center justify-center">
+                          <p className="text-slate-500">Não há dados disponíveis para essa visualização</p>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                  <Card className="md:col-span-1 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Indicadores de Performance</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-6">
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Valorização Percentual</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.assetAppreciation?.appreciationPercentage || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.assetAppreciation?.appreciationPercentage || 0)) / 2)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Valorização total do imóvel</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Retorno Anualizado</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage(adjustValue(projection.calculationResults?.assetAppreciation?.annualizedReturn || 0))}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-100 rounded-full h-2.5">
+                            <div 
+                              className="bg-primary h-2.5 rounded-full" 
+                              style={{ width: `${Math.min(100, (adjustValue(projection.calculationResults?.assetAppreciation?.annualizedReturn || 0)) * 5)}%` }}
+                            ></div>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Taxa média anual de retorno</p>
+                        </div>
+                        
+                        <div>
+                          <div className="flex justify-between mb-1">
+                            <span className="text-sm text-slate-500">Custos de Manutenção</span>
+                            <span className="text-sm font-semibold">
+                              {formatPercentage((adjustValue(projection.calculationResults?.assetAppreciation?.totalMaintenance || 0) / adjustValue(projection.calculationResults?.assetAppreciation?.initialValue || 1)) * 100)}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-500 mt-1">Percentual de custos sobre o valor inicial</p>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+                  
+                  <Card className="md:col-span-2 shadow-sm">
+                    <CardHeader>
+                      <CardTitle className="text-base">Valorização Anual</CardTitle>
+                      <CardDescription>
+                        Detalhamento ano a ano
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent className="max-h-80 overflow-y-auto">
+                      <div className="divide-y">
+                        <div className="py-2 grid grid-cols-5 text-sm font-medium text-slate-500">
+                          <div>Ano</div>
+                          <div className="col-span-2">Valor do Imóvel</div>
+                          <div>Valorização</div>
+                          <div>Manutenção</div>
+                        </div>
+                        
+                        {projection.calculationResults?.assetAppreciationYearly && projection.calculationResults.assetAppreciationYearly.map((item: any, index: number) => (
+                          <div key={index} className="py-3 grid grid-cols-5 text-sm">
+                            <div className="font-medium">{item.year}</div>
+                            <div className="col-span-2 font-semibold">{formatCurrency(adjustValue(item.propertyValue))}</div>
+                            <div className="text-green-600">{formatCurrency(adjustValue(item.appreciation))}</div>
+                            <div className="text-red-600">{formatCurrency(adjustValue(item.maintenanceCost))}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
+            )}
+          </Tabs>
+        </div>
+        
+        {/* Conclusão e observações */}
+        <Card className="shadow-sm border-t-4 border-t-primary">
+          <CardHeader>
+            <CardTitle>Conclusão</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="space-y-4">
+              <p className="text-sm">
+                Este relatório apresenta uma análise detalhada do investimento no imóvel {propertyTitle},
+                considerando {strategies.length} estratégia{strategies.length > 1 ? 's' : ''} de investimento.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="flex flex-col items-center p-4 bg-slate-50 rounded-lg">
+                  <DollarSign className="h-8 w-8 text-primary mb-2" />
+                  <h4 className="text-lg font-semibold mb-1">ROI</h4>
+                  <span className="text-2xl font-bold">
+                    {formatPercentage(adjustValue(projection.calculationResults?.roi || 0))}
+                  </span>
+                  <p className="text-xs text-center text-slate-500 mt-2">
+                    Retorno sobre o investimento total
+                  </p>
+                </div>
+                
+                <div className="flex flex-col items-center p-4 bg-slate-50 rounded-lg">
+                  <BarChartIcon className="h-8 w-8 text-amber-500 mb-2" />
+                  <h4 className="text-lg font-semibold mb-1">TIR</h4>
+                  <span className="text-2xl font-bold">
+                    {formatPercentage(adjustValue(projection.calculationResults?.irr || 0))}
+                  </span>
+                  <p className="text-xs text-center text-slate-500 mt-2">
+                    Taxa interna de retorno anualizada
+                  </p>
+                </div>
+                
+                <div className="flex flex-col items-center p-4 bg-slate-50 rounded-lg">
+                  <Landmark className="h-8 w-8 text-green-500 mb-2" />
+                  <h4 className="text-lg font-semibold mb-1">Lucro Estimado</h4>
+                  <span className="text-2xl font-bold text-green-600">
+                    {formatCurrency(adjustValue(projection.calculationResults?.netProfit || 0))}
+                  </span>
+                  <p className="text-xs text-center text-slate-500 mt-2">
+                    Lucro líquido total projetado
+                  </p>
+                </div>
+              </div>
+              
+              <div className="pt-4">
+                <h4 className="text-sm font-medium mb-2">Cenário Atual: {selectedScenario === 'conservative' ? 'Conservador' : selectedScenario === 'realistic' ? 'Realista' : 'Otimista'}</h4>
+                <p className="text-sm text-slate-600">
+                  {selectedScenario === 'conservative' 
+                    ? 'O cenário conservador considera condições de mercado mais desafiadoras e resultados mais modestos.'
+                    : selectedScenario === 'realistic'
+                    ? 'O cenário realista reflete as condições atuais de mercado e projeções de retorno moderadas.'
+                    : 'O cenário otimista considera condições favoráveis de mercado e melhores resultados para o investimento.'}
+                </p>
+              </div>
+            </div>
+          </CardContent>
+          <CardFooter className="border-t pt-6 flex flex-col sm:flex-row gap-4 justify-between">
+            <Button variant="outline" className="w-full sm:w-auto" onClick={() => navigate(`/projections/edit/${id}`)}>
+              <Edit className="h-4 w-4 mr-2" />
+              Editar Projeção
+            </Button>
+            
+            <div className="flex gap-2">
+              <Button variant="outline" className="w-full sm:w-auto" onClick={handlePrint}>
+                <Printer className="h-4 w-4 mr-2" />
+                Imprimir
+              </Button>
+              <Button className="w-full sm:w-auto">
+                <Share2 className="h-4 w-4 mr-2" />
+                Compartilhar
+              </Button>
+            </div>
+          </CardFooter>
+        </Card>
+        
+        {/* Rodapé */}
+        <div className="text-center text-xs text-slate-500 pt-4 border-t">
+          <p>Este documento foi gerado pelo sistema ROImob em {formatDate(new Date())}.</p>
+          <p className="mt-1">As projeções apresentadas são estimativas baseadas nos dados fornecidos e não constituem garantia de resultados.</p>
+        </div>
+      </div>
+    </div>
+  );
+}

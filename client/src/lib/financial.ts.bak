@@ -1,0 +1,1146 @@
+// Financial calculation functions for the ROImob platform
+
+// Função para calcular o saldo devedor com base no mês da venda de acordo com o cenário
+export function calcularSaldoDevedor(
+  projection: any,
+  calculosProjecao: any[],
+  scenario: string = 'padrao'
+): {
+  saldoDevedorCorrigido: number;
+} {
+  console.log("calcularSaldoDevedor: Iniciando cálculo", { scenario });
+  
+  if (!projection || !calculosProjecao || calculosProjecao.length === 0) {
+    console.log("calcularSaldoDevedor: Dados insuficientes", { 
+      temProjection: !!projection, 
+      temCalculos: !!calculosProjecao, 
+      qtdeCalculos: calculosProjecao?.length || 0 
+    });
+    return {
+      saldoDevedorCorrigido: 0
+    };
+  }
+
+  // 1. Determinar o mês da venda de acordo com o cenário
+  let mesVenda: number;
+  
+  // Adaptar o cenário do parâmetro para o formato do banco (padrao, conservador, otimista)
+  let scenarioAdaptado = scenario;
+  if (scenario === 'realistic' || scenario === 'padrao') scenarioAdaptado = 'padrao';
+  if (scenario === 'conservative' || scenario === 'conservador') scenarioAdaptado = 'conservador';
+  if (scenario === 'optimistic' || scenario === 'otimista') scenarioAdaptado = 'otimista';
+  
+  console.log("Buscando mês da venda:", {
+    cenario: scenarioAdaptado,
+    projectionId: projection.id,
+    projecaoCompleta: projection,
+  });
+
+  // Verificar se estamos em uma nova projeção (que pode ter uma estrutura diferente)
+  const projecaoNova = projection.activeScenario && projection.selectedScenarios;
+  
+  if (projecaoNova) {
+    // Nova projeção ou projeção modificada, pode ter estrutura diferente
+    switch(scenarioAdaptado) {
+      case 'conservador':
+        if (projection.conservador_venda_prazo) {
+          mesVenda = parseInt(String(projection.conservador_venda_prazo));
+        } else if (projection.conservadorVendaPrazo) {
+          mesVenda = parseInt(String(projection.conservadorVendaPrazo));
+        } else if (projection.conservador?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.conservador.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        break;
+      case 'otimista':
+        if (projection.otimista_venda_prazo) {
+          mesVenda = parseInt(String(projection.otimista_venda_prazo));
+        } else if (projection.otimistaVendaPrazo) {
+          mesVenda = parseInt(String(projection.otimistaVendaPrazo));
+        } else if (projection.otimista?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.otimista.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        break;
+      case 'padrao':
+      default:
+        if (projection.padrao_venda_prazo) {
+          mesVenda = parseInt(String(projection.padrao_venda_prazo));
+        } else if (projection.padraoVendaPrazo) {
+          mesVenda = parseInt(String(projection.padraoVendaPrazo));
+        } else if (projection.padrao?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.padrao.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        break;
+    }
+  } else {
+    // Projeção antiga, usar o formato anterior
+    switch(scenarioAdaptado) {
+      case 'conservador':
+        mesVenda = parseInt(String(projection.conservador_venda_prazo)) || projection.deliveryMonths || 36;
+        break;
+      case 'otimista':
+        mesVenda = parseInt(String(projection.otimista_venda_prazo)) || projection.deliveryMonths || 36;
+        break;
+      case 'padrao':
+      default:
+        mesVenda = parseInt(String(projection.padrao_venda_prazo)) || projection.deliveryMonths || 36;
+        break;
+    }
+  }
+  
+  console.log("Usando valor " + scenarioAdaptado.toUpperCase() + ":", mesVenda);
+  
+  console.log("calcularSaldoDevedor: Mês da venda definido", { 
+    mesVenda, 
+    scenario,
+    conservadorVendaPrazo: projection.conservador_venda_prazo,
+    padraoVendaPrazo: projection.padrao_venda_prazo,
+    otimistaVendaPrazo: projection.otimista_venda_prazo
+  });
+
+  // 2. Buscar o valor do saldo devedor corrigido do mesmo mês na tabela calculo_projecoes
+  const calculoMesVenda = calculosProjecao.find(calculo => calculo.mes === mesVenda);
+  console.log("calcularSaldoDevedor: Buscando cálculo do mês de venda", { 
+    mesVenda, 
+    encontrado: !!calculoMesVenda,
+    valorOriginal: calculoMesVenda?.saldoDevedorCorrigido,
+    mesesDisponiveis: calculosProjecao.map(c => c.mes)
+  });
+  
+  const saldoDevedorCorrigido = calculoMesVenda ? parseFloat(String(calculoMesVenda.saldoDevedorCorrigido || '0')) : 0;
+  console.log("calcularSaldoDevedor: Valor final calculado", { saldoDevedorCorrigido });
+
+  return {
+    saldoDevedorCorrigido
+  };
+}
+
+// Função para calcular os valores detalhados do pagamento do financiamento
+export function calcularDetalhamentoTotalPago(
+  projection: any, 
+  calculosProjecao: any[],
+  scenario: string = 'padrao'
+): {
+  totalEntrada: number;
+  totalParcelasCorrigidas: number;
+  totalReforcosCorrigidos: number;
+  totalChavesCorrigido: number;
+  total: number;
+  mesVenda: number;
+} {
+  console.log("calcularDetalhamentoTotalPago: Iniciando cálculo", { scenario });
+  
+  if (!projection || !calculosProjecao || calculosProjecao.length === 0) {
+    console.log("calcularDetalhamentoTotalPago: Dados insuficientes", { 
+      temProjection: !!projection, 
+      temCalculos: !!calculosProjecao, 
+      qtdeCalculos: calculosProjecao?.length || 0 
+    });
+    return {
+      totalEntrada: 0,
+      totalParcelasCorrigidas: 0,
+      totalReforcosCorrigidos: 0,
+      totalChavesCorrigido: 0,
+      total: 0,
+      mesVenda: 0
+    };
+  }
+
+  // Adaptar o cenário do parâmetro para o formato do banco (padrao, conservador, otimista)
+  let scenarioAdaptado = scenario;
+  if (scenario === 'realistic' || scenario === 'padrao') scenarioAdaptado = 'padrao';
+  if (scenario === 'conservative' || scenario === 'conservador') scenarioAdaptado = 'conservador';
+  if (scenario === 'optimistic' || scenario === 'otimista') scenarioAdaptado = 'otimista';
+
+  // Filtrar por cenário
+  const calculosDoCenario = calculosProjecao.filter(c => 
+    !c.scenario || // compatibilidade com dados antigos
+    c.scenario === scenarioAdaptado
+  );
+  
+  if (calculosDoCenario.length === 0) {
+    console.log("calcularDetalhamentoTotalPago: Sem cálculos para o cenário", {
+      scenario,
+      scenarioAdaptado,
+      calculosDisponiveis: calculosProjecao.length,
+      cenariosDiponiveis: [...new Set(calculosProjecao.map(c => c.scenario))]
+    });
+    
+    // Se não tiver cálculos do cenário específico, tenta usar o default
+    const calculosPadrao = calculosProjecao.filter(c => !c.scenario || c.scenario === 'padrao');
+    if (calculosPadrao.length > 0) {
+      console.log("Usando calculosProjecao padrão");
+      return calcularDetalhamentoPorCalculos(projection, calculosPadrao, scenarioAdaptado);
+    }
+    
+    return {
+      totalEntrada: 0,
+      totalParcelasCorrigidas: 0,
+      totalReforcosCorrigidos: 0,
+      totalChavesCorrigido: 0,
+      total: 0,
+      mesVenda: 0
+    };
+  }
+  
+  return calcularDetalhamentoPorCalculos(projection, calculosDoCenario, scenarioAdaptado);
+}
+
+// Função auxiliar para calcular detalhes a partir dos cálculos já filtrados por cenário
+function calcularDetalhamentoPorCalculos(
+  projection: any,
+  calculos: any[],
+  scenario: string = 'padrao'
+): {
+  totalEntrada: number;
+  totalParcelasCorrigidas: number;
+  totalReforcosCorrigidos: number;
+  totalChavesCorrigido: number;
+  total: number;
+  mesVenda: number;
+} {
+  // 1. Determinar o mês da venda de acordo com o cenário
+  let mesVenda: number = 0;
+  
+  // Tenta obter o mesDaVenda do primeiro cálculo (todos devem ter o mesmo valor)
+  if (calculos.length > 0 && calculos[0].mesDaVenda) {
+    mesVenda = calculos[0].mesDaVenda;
+  } else {
+    // Verificar se estamos em uma nova projeção (que pode ter uma estrutura diferente)
+    const projecaoNova = projection.activeScenario && projection.selectedScenarios;
+    
+    if (projecaoNova) {
+      // Nova projeção ou projeção modificada, pode ter estrutura diferente
+      switch(scenario) {
+        case 'conservador':
+          if (projection.conservador_venda_prazo) {
+            mesVenda = parseInt(String(projection.conservador_venda_prazo));
+          } else if (projection.conservadorVendaPrazo) {
+            mesVenda = parseInt(String(projection.conservadorVendaPrazo));
+          } else if (projection.conservador?.futureSale?.investmentPeriod) {
+            mesVenda = parseInt(String(projection.conservador.futureSale.investmentPeriod));
+          } else if (projection.deliveryTime) {
+            mesVenda = parseInt(String(projection.deliveryTime));
+          } else {
+            mesVenda = 36;
+          }
+          break;
+        case 'otimista':
+          if (projection.otimista_venda_prazo) {
+            mesVenda = parseInt(String(projection.otimista_venda_prazo));
+          } else if (projection.otimistaVendaPrazo) {
+            mesVenda = parseInt(String(projection.otimistaVendaPrazo));
+          } else if (projection.otimista?.futureSale?.investmentPeriod) {
+            mesVenda = parseInt(String(projection.otimista.futureSale.investmentPeriod));
+          } else if (projection.deliveryTime) {
+            mesVenda = parseInt(String(projection.deliveryTime));
+          } else {
+            mesVenda = 36;
+          }
+          break;
+        case 'padrao':
+        default:
+          if (projection.padrao_venda_prazo) {
+            mesVenda = parseInt(String(projection.padrao_venda_prazo));
+          } else if (projection.padraoVendaPrazo) {
+            mesVenda = parseInt(String(projection.padraoVendaPrazo));
+          } else if (projection.padrao?.futureSale?.investmentPeriod) {
+            mesVenda = parseInt(String(projection.padrao.futureSale.investmentPeriod));
+          } else if (projection.deliveryTime) {
+            mesVenda = parseInt(String(projection.deliveryTime));
+          } else {
+            mesVenda = 36;
+          }
+          break;
+      }
+    } else {
+      // Projeção antiga, usar o formato anterior
+      switch(scenario) {
+        case 'conservador':
+          mesVenda = projection.conservadorFutureSaleInvestmentPeriod || 
+                    parseInt(String(projection.conservador_venda_prazo)) || 
+                    projection.deliveryMonths || 36;
+          break;
+        case 'otimista':
+          mesVenda = projection.otimistaFutureSaleInvestmentPeriod || 
+                    parseInt(String(projection.otimista_venda_prazo)) || 
+                    projection.deliveryMonths || 36;
+          break;
+        case 'padrao':
+        default:
+          mesVenda = projection.padraoFutureSaleInvestmentPeriod || 
+                    parseInt(String(projection.padrao_venda_prazo)) || 
+                    projection.deliveryMonths || 36;
+          break;
+      }
+    }
+  }
+  
+  console.log("calcularDetalhamentoTotalPago: Mês da venda definido", { 
+    mesVenda, 
+    scenario,
+    mesDaVendaDoCalculo: calculos.length > 0 ? calculos[0].mesDaVenda : null
+  });
+
+  // 1. Total Entrada - obtém o valor_entrada do mês 0 da tabela calculo_projecoes
+  const entradaCalculo = calculos.find(calculo => calculo.mes === 0);
+  console.log("calcularDetalhamentoTotalPago: Entrada", { 
+    entradaEncontrada: !!entradaCalculo,
+    valorOriginal: entradaCalculo?.valorEntrada
+  });
+  const totalEntrada = entradaCalculo ? parseFloat(String(entradaCalculo.valorEntrada || '0')) : 0;
+
+  // 2. Total Parcelas Corrigidas - soma todas as parcelas corrigidas até e incluindo o mês da venda
+  const calculosParaParcelasCorrigidas = calculos.filter(calculo => calculo.mes <= mesVenda);
+  console.log("calcularDetalhamentoTotalPago: Parcelas para somar", { 
+    quantidadeCalculos: calculosParaParcelasCorrigidas.length,
+    primeirosCalculos: calculosParaParcelasCorrigidas.slice(0, 2).map(c => ({
+      mes: c.mes,
+      parcelaCorrigida: c.parcelaCorrigida
+    }))
+  });
+  
+  const totalParcelasCorrigidas = calculos
+    .filter(calculo => calculo.mes <= mesVenda)
+    .reduce((sum, calculo) => sum + parseFloat(String(calculo.parcelaCorrigida || '0')), 0);
+
+  // 3. Total Reforços Corrigidos - soma todos os reforços corrigidos até e incluindo o mês da venda
+  const totalReforcosCorrigidos = calculos
+    .filter(calculo => calculo.mes <= mesVenda)
+    .reduce((sum, calculo) => sum + parseFloat(String(calculo.reforcoCorrigido || '0')), 0);
+
+  // 4. Total Chaves Corrigido - busca o valor das chaves corrigido
+  // Normalmente o pagamento das chaves ocorre no mês da entrega (deliveryMonths)
+  // IMPORTANTE: O valor das chaves só deve ser contabilizado se o mês da venda for >= o prazo de entrega
+  const prazoEntrega = projection.deliveryMonths || parseInt(String(projection.deliveryTime)) || 0;
+  
+  // Verificar se o mês da venda é maior ou igual ao prazo de entrega
+  const incluirChaves = mesVenda >= prazoEntrega;
+  const chavesCalculo = calculos.find(calculo => calculo.mes === prazoEntrega);
+  
+  console.log("calcularDetalhamentoTotalPago: Chaves", { 
+    prazoEntrega,
+    mesVenda,
+    incluirChaves,
+    chavesEncontradas: !!chavesCalculo,
+    valorOriginal: chavesCalculo?.chavesCorrigido
+  });
+  
+  // Só incluir o valor das chaves se o mês da venda for >= prazo de entrega
+  const totalChavesCorrigido = (incluirChaves && chavesCalculo) 
+    ? parseFloat(String(chavesCalculo.chavesCorrigido || '0')) 
+    : 0;
+
+  // 5. Total é a soma dos 4 valores
+  const total = totalEntrada + totalParcelasCorrigidas + totalReforcosCorrigidos + totalChavesCorrigido;
+  
+  console.log("calcularDetalhamentoTotalPago: Totais calculados", {
+    totalEntrada,
+    totalParcelasCorrigidas,
+    totalReforcosCorrigidos,
+    totalChavesCorrigido,
+    total
+  });
+
+  return {
+    totalEntrada,
+    totalParcelasCorrigidas,
+    totalReforcosCorrigidos,
+    totalChavesCorrigido,
+    total,
+    mesVenda
+  };
+}
+
+// Calculate cumulative correction for monthly payments
+export function calculateCumulativePayments(
+  baseAmount: number,
+  months: number,
+  monthlyCorrection: number,
+  includeBonusPayments: boolean = false,
+  bonusFrequency: number = 0,
+  bonusAmount: number = 0
+): { 
+  payments: Array<{
+    month: number;
+    baseAmount: number;
+    correction: number;
+    correctedAmount: number;
+    bonusPayment: number;
+    totalAmount: number;
+  }>;
+  totalPaid: number;
+} {
+  const payments = [];
+  let totalPaid = 0;
+  
+  // Convert percentage to decimal
+  const correctionRate = monthlyCorrection / 100;
+  
+  for (let month = 1; month <= months; month++) {
+    // Calculate cumulative correction
+    const correction = baseAmount * Math.pow(1 + correctionRate, month - 1) - baseAmount;
+    const correctedAmount = baseAmount + correction;
+    
+    // Check if this month has a bonus payment
+    const hasBonusPayment = includeBonusPayments && bonusFrequency > 0 && month % bonusFrequency === 0;
+    const bonusPaymentAmount = hasBonusPayment ? bonusAmount : 0;
+    
+    // Calculate total amount for this month
+    const totalAmount = correctedAmount + bonusPaymentAmount;
+    totalPaid += totalAmount;
+    
+    payments.push({
+      month,
+      baseAmount,
+      correction,
+      correctedAmount,
+      bonusPayment: bonusPaymentAmount,
+      totalAmount
+    });
+  }
+  
+  return { payments, totalPaid };
+}
+
+// Calculate future sale projection
+export function calculateFutureSaleProjection(
+  listPrice: number,
+  discount: number,
+  downPayment: number,
+  paymentMonths: number,
+  monthlyCorrection: number,
+  deliveryMonths: number,
+  postDeliveryCorrection: number,
+  includeBonusPayments: boolean = false,
+  bonusFrequency: number = 0,
+  bonusAmount: number = 0,
+  futureValuePercentage: number = 0,
+  futureValueMonth: number = 0,
+  saleCommission: number = 0,
+  saleTaxes: number = 0,
+  incomeTax: number = 0
+): {
+  cashFlow: any[];
+  summary: {
+    purchasePrice: number;
+    totalInvestment: number;
+    futureValue: number;
+    grossProfit: number;
+    saleExpenses: number;
+    netProfit: number;
+    roi: number;
+    irr: number;
+    paybackMonths: number;
+  };
+} {
+  // Calculate the discounted price
+  const discountedPrice = listPrice * (1 - discount / 100);
+  
+  // Calculate down payment amount
+  const downPaymentAmount = discountedPrice * (downPayment / 100);
+  
+  // Calculate monthly payment (base amount)
+  const remainingAmount = discountedPrice - downPaymentAmount;
+  const baseMonthlyPayment = remainingAmount / paymentMonths;
+  
+  // Calculate payments before delivery (with initial correction rate)
+  const preDeliveryMonths = Math.min(deliveryMonths, paymentMonths);
+  const preDeliveryPayments = calculateCumulativePayments(
+    baseMonthlyPayment,
+    preDeliveryMonths,
+    monthlyCorrection,
+    includeBonusPayments,
+    bonusFrequency,
+    bonusAmount
+  );
+  
+  // Calculate payments after delivery (with possibly different correction rate)
+  const postDeliveryMonths = paymentMonths - preDeliveryMonths;
+  let postDeliveryPayments = { payments: [], totalPaid: 0 };
+  
+  if (postDeliveryMonths > 0) {
+    postDeliveryPayments = calculateCumulativePayments(
+      baseMonthlyPayment,
+      postDeliveryMonths,
+      postDeliveryCorrection,
+      includeBonusPayments,
+      bonusFrequency,
+      bonusAmount
+    );
+    
+    // Adjust month numbers for post-delivery payments
+    postDeliveryPayments.payments.forEach(payment => {
+      payment.month += preDeliveryMonths;
+    });
+  }
+  
+  // Combine all payments into a cash flow
+  const cashFlow = [
+    { 
+      month: 0,
+      description: 'Entrada',
+      amount: -downPaymentAmount,
+      type: 'payment'
+    },
+    ...preDeliveryPayments.payments.map(payment => ({
+      month: payment.month,
+      description: `Parcela ${payment.month}`,
+      amount: -payment.totalAmount,
+      type: 'payment',
+      ...payment
+    })),
+    ...postDeliveryPayments.payments.map(payment => ({
+      month: payment.month,
+      description: `Parcela ${payment.month}`,
+      amount: -payment.totalAmount,
+      type: 'payment',
+      ...payment
+    }))
+  ];
+  
+  // Calculate total investment
+  const totalInvestment = downPaymentAmount + 
+    preDeliveryPayments.totalPaid + 
+    postDeliveryPayments.totalPaid;
+  
+  // Add future sale at specified month - Convert annual rate to total appreciation
+  // Formula: futureValue = initialValue * (1 + annualRate/100)^(years)
+  const years = futureValueMonth / 12;
+  const futureValue = discountedPrice * Math.pow(1 + futureValuePercentage / 100, years);
+  
+  // Calculate sale expenses
+  const commissionAmount = futureValue * (saleCommission / 100);
+  const taxesAmount = futureValue * (saleTaxes / 100);
+  // Custos adicionais como percentual do valor futuro (additionalCosts deve ser passado em % como parâmetro adicional)
+  const additionalCostsAmount = arguments[16] ? futureValue * (arguments[16] / 100) : 0;
+  const grossProfit = futureValue - discountedPrice;
+  const incomeTaxAmount = grossProfit * (incomeTax / 100);
+  const totalSaleExpenses = commissionAmount + taxesAmount + incomeTaxAmount + additionalCostsAmount;
+  
+  // Add sale transaction to cash flow
+  cashFlow.push({
+    month: futureValueMonth,
+    description: 'Venda do imóvel',
+    amount: futureValue,
+    type: 'income'
+  });
+  
+  cashFlow.push({
+    month: futureValueMonth,
+    description: 'Comissão de venda',
+    amount: -commissionAmount,
+    type: 'expense'
+  });
+  
+  cashFlow.push({
+    month: futureValueMonth,
+    description: 'Impostos sobre a venda',
+    amount: -taxesAmount,
+    type: 'expense'
+  });
+  
+  cashFlow.push({
+    month: futureValueMonth,
+    description: 'Imposto de renda',
+    amount: -incomeTaxAmount,
+    type: 'expense'
+  });
+
+  // Adicionar custos adicionais ao fluxo de caixa
+  if (additionalCostsAmount > 0) {
+    cashFlow.push({
+      month: futureValueMonth,
+      description: 'Custos adicionais',
+      amount: -additionalCostsAmount,
+      type: 'expense'
+    });
+  }
+  
+  // Calculate ROI
+  const netProfit = grossProfit - totalSaleExpenses;
+  const roi = (netProfit / totalInvestment) * 100;
+  
+  // Calculate IRR
+  // Convert cash flow for IRR calculation
+  const irrCashFlow = Array(futureValueMonth + 1).fill(0);
+  
+  cashFlow.forEach(cf => {
+    irrCashFlow[cf.month] += cf.amount;
+  });
+  
+  // Calculate IRR
+  const monthlyIRR = calculateIRR(irrCashFlow);
+  
+  // Calculate annualized IRR
+  const annualIRR = ((1 + monthlyIRR / 100) ** 12 - 1) * 100;
+  
+  // Calculate payback period
+  const cumulativeCashflow = Array(futureValueMonth + 1).fill(0);
+  
+  // Initialize with the first payment (usually the down payment)
+  cumulativeCashflow[0] = irrCashFlow[0];
+  
+  for (let i = 1; i < irrCashFlow.length; i++) {
+    cumulativeCashflow[i] = cumulativeCashflow[i - 1] + irrCashFlow[i];
+  }
+  
+  // Find the first month where cumulative cash flow becomes positive
+  let paybackMonths = futureValueMonth;
+  for (let i = 0; i < cumulativeCashflow.length; i++) {
+    if (cumulativeCashflow[i] >= 0) {
+      paybackMonths = i;
+      break;
+    }
+  }
+  
+  // Prepare the summary
+  const summary = {
+    purchasePrice: discountedPrice,
+    totalInvestment,
+    futureValue,
+    grossProfit,
+    saleExpenses: totalSaleExpenses,
+    netProfit,
+    roi,
+    irr: annualIRR,
+    paybackMonths
+  };
+  
+  return {
+    cashFlow,
+    summary
+  };
+}
+
+// Calculate asset appreciation projection
+export function calculateAssetAppreciationProjection(
+  purchasePrice: number,
+  appreciationYears: number,
+  annualAppreciation: number,
+  maintenanceCosts: number
+): {
+  yearlyProjection: any[];
+  summary: {
+    initialValue: number;
+    finalValue: number;
+    totalAppreciation: number;
+    appreciationPercentage: number;
+    totalMaintenance: number;
+    netGain: number;
+    annualizedReturn: number;
+  };
+} {
+  const yearlyProjection = [];
+  let currentValue = purchasePrice;
+  let cumulativeMaintenance = 0;
+  
+  // Generate yearly projection
+  for (let year = 1; year <= appreciationYears; year++) {
+    // Apply annual appreciation
+    const appreciation = currentValue * (annualAppreciation / 100);
+    currentValue += appreciation;
+    
+    // Add yearly maintenance cost
+    cumulativeMaintenance += maintenanceCosts * 12; // Annual maintenance
+    
+    yearlyProjection.push({
+      year,
+      propertyValue: currentValue,
+      appreciation,
+      maintenanceCost: maintenanceCosts * 12,
+      cumulativeMaintenance,
+      netValue: currentValue - cumulativeMaintenance
+    });
+  }
+  
+  // Calculate summary metrics
+  const finalValue = currentValue;
+  const totalAppreciation = finalValue - purchasePrice;
+  const appreciationPercentage = (totalAppreciation / purchasePrice) * 100;
+  const netGain = totalAppreciation - cumulativeMaintenance;
+  
+  // Calculate annualized return
+  const annualizedReturn = Math.pow(1 + netGain / purchasePrice, 1 / appreciationYears) - 1;
+  
+  const summary = {
+    initialValue: purchasePrice,
+    finalValue,
+    totalAppreciation,
+    appreciationPercentage,
+    totalMaintenance: cumulativeMaintenance,
+    netGain,
+    annualizedReturn: annualizedReturn * 100
+  };
+  
+  return {
+    yearlyProjection,
+    summary
+  };
+}
+
+// Calculate rental yield projection
+export function calculateRentalYieldProjection(
+  purchasePrice: number,
+  monthlyRental: number,
+  furnishingCosts: number,
+  condoFees: number,
+  propertyTax: number,
+  annualAppreciation: number = 5, // Default 5% annual appreciation
+  projectionYears: number = 10    // Default 10 year projection
+): {
+  yearlyProjection: any[];
+  summary: {
+    initialInvestment: number;
+    annualRentalIncome: number;
+    annualExpenses: number;
+    annualNetIncome: number;
+    firstYearYield: number;
+    averageYield: number;
+    propertyValueIncrease: number;
+    totalReturn: number;
+    totalReturnPercentage: number;
+  };
+} {
+  const yearlyProjection = [];
+  
+  // Initial values
+  const initialInvestment = purchasePrice + furnishingCosts;
+  let propertyValue = purchasePrice;
+  const monthlyExpenses = condoFees + (propertyTax / 12);
+  const annualExpenses = monthlyExpenses * 12;
+  const annualRentalIncome = monthlyRental * 12;
+  const annualNetIncome = annualRentalIncome - annualExpenses;
+  
+  let totalRentalIncome = 0;
+  let totalExpenses = furnishingCosts; // Initial furnishing cost
+  
+  // Generate yearly projection
+  for (let year = 1; year <= projectionYears; year++) {
+    // Apply annual appreciation to property value
+    const yearAppreciation = propertyValue * (annualAppreciation / 100);
+    propertyValue += yearAppreciation;
+    
+    // Apply inflation to rental income (assume same rate as appreciation for simplicity)
+    const yearRental = annualRentalIncome * Math.pow(1 + annualAppreciation / 100, year - 1);
+    const yearExpenses = annualExpenses * Math.pow(1 + annualAppreciation / 100, year - 1);
+    const yearNetIncome = yearRental - yearExpenses;
+    const yearYield = (yearNetIncome / initialInvestment) * 100;
+    
+    totalRentalIncome += yearRental;
+    totalExpenses += yearExpenses;
+    
+    yearlyProjection.push({
+      year,
+      propertyValue,
+      appreciation: yearAppreciation,
+      rentalIncome: yearRental,
+      expenses: yearExpenses,
+      netIncome: yearNetIncome,
+      yield: yearYield
+    });
+  }
+  
+  // Calculate summary metrics
+  const firstYearYield = (annualNetIncome / initialInvestment) * 100;
+  
+  // Calculate average yield over the period
+  const totalYield = yearlyProjection.reduce((sum, year) => sum + year.yield, 0);
+  const averageYield = totalYield / projectionYears;
+  
+  // Calculate property value increase
+  const propertyValueIncrease = propertyValue - purchasePrice;
+  
+  // Calculate total return (property appreciation + net rental income)
+  const totalNetRentalIncome = totalRentalIncome - totalExpenses;
+  const totalReturn = propertyValueIncrease + totalNetRentalIncome;
+  const totalReturnPercentage = (totalReturn / initialInvestment) * 100;
+  
+  const summary = {
+    initialInvestment,
+    annualRentalIncome,
+    annualExpenses,
+    annualNetIncome,
+    firstYearYield,
+    averageYield,
+    propertyValueIncrease,
+    totalReturn,
+    totalReturnPercentage
+  };
+  
+  return {
+    yearlyProjection,
+    summary
+  };
+}
+
+// Helper functions
+function calculateIRR(cashflows: number[], maxIterations = 1000, precision = 0.000001): number {
+  // Start with a guess of 10%
+  let guess = 0.1;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const npv = cashflows.reduce((sum, cashflow, index) => {
+      return sum + cashflow / Math.pow(1 + guess, index);
+    }, 0);
+
+    if (Math.abs(npv) < precision) {
+      return guess;
+    }
+
+    // Use the derivative of the NPV function to improve the guess
+    const derivativeNPV = cashflows.reduce((sum, cashflow, index) => {
+      return sum - (index * cashflow) / Math.pow(1 + guess, index + 1);
+    }, 0);
+
+    // Newton-Raphson method
+    guess = guess - npv / derivativeNPV;
+
+    if (guess < -1) {
+      // IRR cannot be less than -100%
+      return -1;
+    }
+  }
+
+  return guess;
+}
+
+/**
+ * Calcula a TIR (Taxa Interna de Retorno) baseado no modelo do Excel
+ * @param projectionId ID da projeção
+ * @param scenario Cenário (padrao, conservador, otimista)
+ * @returns Taxa Interna de Retorno mensal em formato decimal (ex: 0.0141 para 1,41% ao mês)
+ */
+export async function calcularTIRExcel(projectionId: number, scenario: string = 'padrao'): Promise<number> {
+  if (!projectionId) {
+    console.error("calcularTIRExcel: ID da projeção não informado");
+    return 0;
+  }
+
+  try {
+    // Adaptar o cenário do parâmetro para o formato do banco
+    let scenarioAdaptado = scenario;
+    if (scenario === 'realistic') scenarioAdaptado = 'padrao';
+    if (scenario === 'conservative') scenarioAdaptado = 'conservador';
+    if (scenario === 'optimistic') scenarioAdaptado = 'otimista';
+
+    console.log("calcularTIRExcel: Iniciando cálculo", { projectionId, scenario: scenarioAdaptado });
+
+    // 1. Buscar dados da projeção diretamente do banco de dados
+    // Esta parte deve ser implementada no servidor, pois o frontend não tem acesso direto ao banco
+    // Aqui vou criar a interface para essa função, que deve ser chamada via API
+    
+    // No servidor, você precisará implementar uma função que retorna:
+    // 1. Dados da projeção (projections)
+    // 2. Cálculos da projeção (calculo_projecoes)
+    
+    // Estrutura dos dados que a API precisa retornar:
+    interface ProjecaoDados {
+      valorTabela: number;
+      prazoVenda: number;
+      valorizacaoAnual: number;
+      comissao: number;
+      custosAdicionais: number;
+      custosManutencao: number;
+      valorEntrada: number;
+      saldoDevedorNoMesVenda: number;
+      pagamentosMensais: {
+        mes: number;
+        pagamentoTotal: number;
+      }[];
+    }
+    
+    // No frontend, precisamos receber esses dados para continuar o cálculo
+    // Como não podemos implementar essa parte agora, vamos simular o resultado
+    // com dados para teste (que seriam os valores retornados pela API)
+    
+    // 2. Com os dados obtidos, criar o array de fluxo de caixa
+    function montarFluxoCaixaParaTIR(dados: ProjecaoDados): number[] {
+      // Criar o array com tamanho exato (prazoVenda + 1)
+      const cashFlow = new Array(dados.prazoVenda + 1).fill(0);
+      
+      // Colocar a entrada no mês 0 (negativa, pois é saída de caixa)
+      cashFlow[0] = -dados.valorEntrada;
+      
+      // Adicionar cada pagamento mensal (todos negativos)
+      dados.pagamentosMensais.forEach(pagamento => {
+        if (pagamento.mes < dados.prazoVenda) {
+          cashFlow[pagamento.mes] = -pagamento.pagamentoTotal;
+        }
+      });
+      
+      // Calcular valor da venda projetada no mês da venda
+      const anos = dados.prazoVenda / 12;
+      const valorVendaProjetada = dados.valorTabela * Math.pow(1 + dados.valorizacaoAnual / 100, anos);
+      
+      // Calcular despesas da venda
+      const comissaoVenda = valorVendaProjetada * (dados.comissao / 100);
+      const custosAdicionaisVenda = valorVendaProjetada * (dados.custosAdicionais / 100);
+      
+      // Valor líquido no mês da venda (receita - despesas)
+      cashFlow[dados.prazoVenda] = valorVendaProjetada - 
+                                 dados.saldoDevedorNoMesVenda - 
+                                 comissaoVenda - 
+                                 custosAdicionaisVenda - 
+                                 dados.custosManutencao;
+      
+      console.log("calcularTIRExcel: Fluxo de caixa montado", { 
+        tamanho: cashFlow.length,
+        fluxo: cashFlow,
+        valorVendaProjetada,
+        comissaoVenda,
+        custosAdicionaisVenda,
+        valorLiquidoFinal: cashFlow[dados.prazoVenda]
+      });
+      
+      return cashFlow;
+    }
+    
+    // 3. Calcular a TIR com o array de fluxo de caixa
+    function calcularTIRMensal(cashFlow: number[]): number {
+      // Usar a função de cálculo existente
+      return calculateIRR(cashFlow);
+    }
+    
+    // Esta parte será substituída pela chamada real à API do servidor
+    // quando for implementada
+    console.log("calcularTIRExcel: Preparando para chamar API para dados da projeção", { 
+      projectionId, 
+      scenario: scenarioAdaptado 
+    });
+    
+    // No futuro: const projecaoDados = await api.get(`/api/projections/${projectionId}/dados-tir?scenario=${scenarioAdaptado}`);
+    
+    // 4. Retornar o valor calculado
+    // O valor retornado deve ser a TIR mensal em formato decimal
+    // Por exemplo, 0.0141 para 1,41% ao mês
+    
+    return 0; // Substituir pelo valor real após implementação completa
+    
+  } catch (error) {
+    console.error("calcularTIRExcel: Erro ao calcular TIR", error);
+    return 0;
+  }
+}
+
+/**
+ * Calcula o valor de venda projetada de acordo com o cenário
+ * @param projection Projeção contendo os dados de valorização
+ * @param scenario Cenário atual (padrao, conservador ou otimista)
+ * @returns Valor da venda projetada em R$
+ */
+export function calcularVendaProjetada(
+  projection: any,
+  scenario: string
+): { valorVendaProjetada: number } {
+  console.log("calcularVendaProjetada: Iniciando cálculo", { scenario });
+  
+  // Valor inicial do imóvel
+  const valorImovel = projection.listPrice ? parseFloat(String(projection.listPrice)) : 0;
+  
+  // Obter mês da venda de acordo com o cenário
+  let mesVenda = 0;
+  let taxaValorizacao = 0;
+  
+  // Log detalhado da projeção para depuração
+  console.log("calcularVendaProjetada: DEBUG - Campos de valorização na projeção:", {
+    padrao_venda_valorizacao: projection.padrao_venda_valorizacao,
+    conservador_venda_valorizacao: projection.conservador_venda_valorizacao,
+    otimista_venda_valorizacao: projection.otimista_venda_valorizacao,
+    projection_id: projection.id,
+    titulo: projection.title
+  });
+  
+  // Verificar se estamos em uma nova projeção (que pode ter uma estrutura diferente)
+  const projecaoNova = projection.activeScenario && projection.selectedScenarios;
+  
+  if (projecaoNova) {
+    // Nova projeção ou projeção modificada, pode ter estrutura diferente
+    switch(scenario) {
+      case 'conservador':
+        if (projection.conservador_venda_prazo) {
+          mesVenda = parseInt(String(projection.conservador_venda_prazo));
+        } else if (projection.conservadorVendaPrazo) {
+          mesVenda = parseInt(String(projection.conservadorVendaPrazo));
+        } else if (projection.conservador?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.conservador.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        
+        // Obter taxa de valorização para o cenário conservador
+        if (projection.conservador_venda_valorizacao !== undefined && projection.conservador_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.conservador_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do conservador do BD", { 
+            valor_original: projection.conservador_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else if (projection.conservador?.futureSale?.appreciationRate) {
+          taxaValorizacao = parseFloat(String(projection.conservador.futureSale.appreciationRate));
+          console.log("calcularVendaProjetada: Usando valorização do conservador de futureSale", { 
+            valor_original: projection.conservador.futureSale.appreciationRate, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 10; // Taxa padrão de 10% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para conservador", { valor_parseado: taxaValorizacao });
+        }
+        break;
+        
+      case 'otimista':
+        if (projection.otimista_venda_prazo) {
+          mesVenda = parseInt(String(projection.otimista_venda_prazo));
+        } else if (projection.otimistaVendaPrazo) {
+          mesVenda = parseInt(String(projection.otimistaVendaPrazo));
+        } else if (projection.otimista?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.otimista.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        
+        // Obter taxa de valorização para o cenário otimista
+        if (projection.otimista_venda_valorizacao !== undefined && projection.otimista_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.otimista_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do otimista do BD", { 
+            valor_original: projection.otimista_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else if (projection.otimista?.futureSale?.appreciationRate) {
+          taxaValorizacao = parseFloat(String(projection.otimista.futureSale.appreciationRate));
+          console.log("calcularVendaProjetada: Usando valorização do otimista de futureSale", { 
+            valor_original: projection.otimista.futureSale.appreciationRate, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 20; // Taxa padrão de 20% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para otimista", { valor_parseado: taxaValorizacao });
+        }
+        break;
+        
+      case 'padrao':
+      default:
+        if (projection.padrao_venda_prazo) {
+          mesVenda = parseInt(String(projection.padrao_venda_prazo));
+        } else if (projection.padraoVendaPrazo) {
+          mesVenda = parseInt(String(projection.padraoVendaPrazo));
+        } else if (projection.padrao?.futureSale?.investmentPeriod) {
+          mesVenda = parseInt(String(projection.padrao.futureSale.investmentPeriod));
+        } else if (projection.deliveryTime) {
+          mesVenda = parseInt(String(projection.deliveryTime));
+        } else {
+          mesVenda = 36;
+        }
+        
+        // Obter taxa de valorização para o cenário padrão
+        if (projection.padrao_venda_valorizacao !== undefined && projection.padrao_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.padrao_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do padrão do BD", { 
+            valor_original: projection.padrao_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else if (projection.padrao?.futureSale?.appreciationRate) {
+          taxaValorizacao = parseFloat(String(projection.padrao.futureSale.appreciationRate));
+          console.log("calcularVendaProjetada: Usando valorização do padrão de futureSale", { 
+            valor_original: projection.padrao.futureSale.appreciationRate, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 15; // Taxa padrão de 15% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para padrão", { valor_parseado: taxaValorizacao });
+        }
+        break;
+    }
+  } else {
+    // Projeção antiga, usar o formato anterior
+    switch(scenario) {
+      case 'conservador':
+        mesVenda = projection.conservadorFutureSaleInvestmentPeriod || 
+                  parseInt(String(projection.conservador_venda_prazo)) || 
+                  projection.deliveryMonths || 36;
+                  
+        // Obter taxa de valorização para o cenário conservador
+        if (projection.conservador_venda_valorizacao !== undefined && projection.conservador_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.conservador_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do conservador do BD (formato antigo)", { 
+            valor_original: projection.conservador_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 10; // Taxa padrão de 10% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para conservador (formato antigo)", { valor_parseado: taxaValorizacao });
+        }
+        break;
+        
+      case 'otimista':
+        mesVenda = projection.otimistaFutureSaleInvestmentPeriod || 
+                  parseInt(String(projection.otimista_venda_prazo)) || 
+                  projection.deliveryMonths || 36;
+                  
+        // Obter taxa de valorização para o cenário otimista
+        if (projection.otimista_venda_valorizacao !== undefined && projection.otimista_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.otimista_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do otimista do BD (formato antigo)", { 
+            valor_original: projection.otimista_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 20; // Taxa padrão de 20% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para otimista (formato antigo)", { valor_parseado: taxaValorizacao });
+        }
+        break;
+        
+      case 'padrao':
+      default:
+        mesVenda = projection.padraoFutureSaleInvestmentPeriod || 
+                  parseInt(String(projection.padrao_venda_prazo)) || 
+                  projection.deliveryMonths || 36;
+                  
+        // Obter taxa de valorização para o cenário padrão
+        if (projection.padrao_venda_valorizacao !== undefined && projection.padrao_venda_valorizacao !== null) {
+          taxaValorizacao = parseFloat(String(projection.padrao_venda_valorizacao));
+          console.log("calcularVendaProjetada: Usando valorização do padrão do BD (formato antigo)", { 
+            valor_original: projection.padrao_venda_valorizacao, 
+            valor_parseado: taxaValorizacao 
+          });
+        } else {
+          taxaValorizacao = 15; // Taxa padrão de 15% a.a. se não houver valor definido
+          console.log("calcularVendaProjetada: Usando valorização padrão para padrão (formato antigo)", { valor_parseado: taxaValorizacao });
+        }
+        break;
+    }
+  }
+  
+  console.log("calcularVendaProjetada: Parâmetros para o cálculo", { 
+    valorImovel, 
+    mesVenda, 
+    taxaValorizacao,
+    scenario
+  });
+  
+  // Calcular valor futuro - Fórmula: valorFuturo = valorPresente * (1 + taxaAnual/100)^(anos)
+  const anos = mesVenda / 12;
+  const valorVendaProjetada = valorImovel * Math.pow(1 + taxaValorizacao / 100, anos);
+  
+  console.log("calcularVendaProjetada: Resultado", { 
+    valorVendaProjetada, 
+    mesVenda, 
+    taxaAnual: taxaValorizacao 
+  });
+  
+  return { valorVendaProjetada };
+}
